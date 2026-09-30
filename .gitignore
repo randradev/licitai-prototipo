@@ -6,7 +6,7 @@ venv/
 .env
 
 # Bases de datos 
-# *.db
+*.db
 
 # Streamlit y entorno
 .streamlit/

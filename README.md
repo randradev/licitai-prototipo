@@ -54,7 +54,7 @@ pip install -r requirements.txt
 
 ### 3. Variables de Entorno (Secrets)
 Crea un archivo .env en la raíz del proyecto:
-GOOGLE_API_KEY=tu_api_key_de_gemini
+GEMINI_API_KEY=tu_api_key_de_gemini
 MP_TICKET=tu_ticket_api_mercado_público
 
 ---
