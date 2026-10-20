@@ -73,6 +73,30 @@ def test_calendario_solo_activas_abiertas_ordenadas():
     assert filas[0]["inicio"].date().isoformat() == "2026-10-20"   # Sin publicación: usa la fecha de registro
 
 
+def test_calendario_titulos_repetidos_no_comparten_fila_y_detalle_legible():
+    licits = [_l("A", fecha_cierre="2026-10-21T10:00:00", titulo="Reactivos"),
+              _l("B", fecha_cierre="2026-10-30T10:00:00", titulo="Reactivos", score=None),
+              _l("C", fecha_cierre="2026-10-20T18:00:00", titulo="Microscopio")]
+    filas = panorama.datos_calendario(licits, AHORA)
+    assert [f["fila"] for f in filas] == ["Microscopio", "Reactivos (A)", "Reactivos (B)"]
+    assert len({f["fila"] for f in filas}) == 3
+    assert [f["detalle"] for f in filas] == ["Cierra el 20/10 · hoy · score 8", "Cierra el 21/10 · mañana · score 8",
+                                             "Cierra el 30/10 · en 10 días"]
+
+
+def test_calendario_alto_por_fila_fijo():
+    """El alto crece con la cantidad de filas (paso fijo): con pocas filas no se encima nada."""
+    licits = [_l(i, fecha_cierre="2026-10-25T10:00:00", titulo=f"T{i}") for i in "ABC"]
+    spec = panorama.grafico_calendario(panorama.datos_calendario(licits, AHORA), panorama.TEMAS["dark"], AHORA).to_dict()
+    assert spec["height"] == {"step": 38}
+
+
+def test_eje_de_conteo_sin_marcas_repetidas():
+    assert panorama._eje_conteo(1).to_dict()["values"] == [0, 1]
+    assert panorama._eje_conteo(4).to_dict()["values"] == [0, 1, 2, 3, 4]
+    assert "values" not in panorama._eje_conteo(25).to_dict()
+
+
 def test_riesgo_requiere_score_y_reclamos():
     licits = [_l("A", reclamos_pago_n=80), _l("B", reclamos_pago_n=None), _l("C", score=None, reclamos_pago_n=5),
               _l("D", estado="pendiente", reclamos_pago_n=5)]

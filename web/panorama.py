@@ -104,13 +104,23 @@ def datos_calendario(licitaciones, ahora=None):
         if l.get("estado") not in ESTADOS_ACTIVOS or not cierre or cierre < ahora:
             continue
         inicio = parsear_fecha_hora(l.get("fecha_publicacion")) or parsear_fecha_hora((l.get("fecha_creacion") or "")[:19]) or ahora
+        dias = dias_para_cierre(l.get("fecha_cierre"), ahora)
+        score = l.get("score_ia")
+        cuando = "hoy" if dias == 0 else "mañana" if dias == 1 else f"en {dias} días"
         filas.append({
             "id_externo": l["id_externo"], "titulo": _titulo_corto(l, 55), "organismo": l.get("organismo") or "—",
-            "inicio": inicio, "cierre": cierre, "score": l.get("score_ia"),
-            "dias": dias_para_cierre(l.get("fecha_cierre"), ahora),
+            "inicio": inicio, "cierre": cierre, "score": score, "dias": dias,
             "favorita": l.get("estado") == "favorita",
+            "detalle": f"Cierra el {cierre.strftime('%d/%m')} · {cuando}" + (f" · score {score}" if score is not None else ""),
         })
-    return sorted(filas, key=lambda f: f["cierre"])
+    filas.sort(key=lambda f: f["cierre"])
+    # Etiqueta del eje única por fila: dos títulos iguales no deben compartir (y superponer) una fila
+    vistos = {}
+    for f in filas:
+        vistos[f["titulo"]] = vistos.get(f["titulo"], 0) + 1
+    for f in filas:
+        f["fila"] = f"{f['titulo']} ({f['id_externo']})" if vistos[f["titulo"]] > 1 else f["titulo"]
+    return filas
 
 
 def datos_riesgo(licitaciones):
@@ -184,29 +194,28 @@ def grafico_embudo(filas, t):
 
 
 def grafico_calendario(filas, t, ahora=None):
-    ahora = ahora or datetime.now()
-    # Ventana enfocada en lo que importa (hasta el cierre): una semana atrás como contexto
-    desde = ahora - timedelta(days=7)
+    """
+    Cuánto falta para cada cierre: una barra por licitación (largo = días restantes),
+    de la más urgente a la menos urgente, con la fecha y el score escritos al final.
+    Cada fila tiene alto fijo (alt.Step), así que nunca se superponen.
+    """
     df = pd.DataFrame(filas)
-    df["inicio_visible"] = df["inicio"].map(lambda f: max(f, desde))
-    hoy = pd.DataFrame({"hoy": [ahora]})
-    orden = list(df["titulo"])
-    dominio = [desde, max(df["cierre"]) + timedelta(days=2)]
-    barras = alt.Chart(df).mark_bar(height=12, cornerRadius=4).encode(
-        y=alt.Y("titulo:N", sort=orden, title=None, axis=alt.Axis(labelLimit=320, labelColor=t["texto2"])),
-        x=alt.X("inicio_visible:T", title=None, axis=alt.Axis(format="%d %b"), scale=alt.Scale(domain=dominio)),
-        x2="cierre:T",
-        color=alt.Color("score:Q", title="Score", scale=alt.Scale(domain=[1, 10], range=t["rampa"]),
-                        legend=alt.Legend(orient="top", gradientLength=160)),
-        tooltip=[alt.Tooltip("titulo:N", title="Licitación"), alt.Tooltip("organismo:N", title="Organismo"),
-                 alt.Tooltip("score:Q", title="Score"), alt.Tooltip("inicio:T", title="Publicación", format="%d/%m/%Y"),
-                 alt.Tooltip("cierre:T", title="Cierre", format="%d/%m/%Y %H:%M"),
-                 alt.Tooltip("dias:Q", title="Días para el cierre")],
+    df["dias_barra"] = df["dias"].map(lambda d: max(d, 0.35))   # "Cierra hoy" sigue siendo visible
+    maximo = max(df["dias"].max(), 1)
+    tooltip = [alt.Tooltip("titulo:N", title="Licitación"), alt.Tooltip("organismo:N", title="Organismo"),
+               alt.Tooltip("cierre:T", title="Cierre", format="%d/%m/%Y %H:%M"),
+               alt.Tooltip("dias:Q", title="Días para el cierre"), alt.Tooltip("score:Q", title="Score")]
+    base = alt.Chart(df).encode(
+        y=alt.Y("fila:N", sort=list(df["fila"]), title=None,
+                axis=alt.Axis(labelLimit=340, labelColor=t["texto2"], labelFontSize=12, ticks=False, domain=False)),
+        tooltip=tooltip,
     )
-    regla = alt.Chart(hoy).mark_rule(color=t["muted"], strokeWidth=1).encode(x="hoy:T")
-    etiqueta_hoy = alt.Chart(hoy).mark_text(text="hoy", dy=-6, color=t["muted"], fontSize=11, baseline="bottom", align="left", dx=3).encode(
-        x="hoy:T", y=alt.value(0))
-    return _config((barras + regla + etiqueta_hoy).properties(height=max(120, 30 * len(df) + 40)), t)
+    barras = base.mark_bar(color=t["serie"], cornerRadiusEnd=4, size=14).encode(
+        x=alt.X("dias_barra:Q", title="Días hasta el cierre", scale=alt.Scale(domain=[0, maximo * 1.55], nice=False),
+                axis=alt.Axis(tickMinStep=1, format="d", grid=True)))
+    textos = base.mark_text(align="left", dx=8, color=t["texto2"], fontSize=12).encode(
+        x="dias_barra:Q", text="detalle:N")
+    return _config((barras + textos).properties(height=alt.Step(38)), t)
 
 
 def grafico_riesgo(filas, t):
@@ -223,11 +232,19 @@ def grafico_riesgo(filas, t):
     return _config((puntos + objetivo).properties(height=320), t)
 
 
+def _eje_conteo(maximo):
+    """Eje de conteos sin marcas repetidas: con pocos valores se listan los enteros explícitamente."""
+    if maximo <= 10:
+        return alt.Axis(values=list(range(0, int(maximo) + 1)), format="d")
+    return alt.Axis(tickMinStep=1, format="d")
+
+
 def grafico_histograma(filas, t):
     df = pd.DataFrame(filas)
     return _config(alt.Chart(df).mark_bar(color=t["serie"], cornerRadiusTopLeft=4, cornerRadiusTopRight=4, width=22).encode(
         x=alt.X("score:O", title="Score", axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("cantidad:Q", title="Licitaciones", axis=alt.Axis(tickMinStep=1, format="d")),
+        y=alt.Y("cantidad:Q", title="Licitaciones", axis=_eje_conteo(df["cantidad"].max()),
+                scale=alt.Scale(domain=[0, max(int(df["cantidad"].max()), 1)])),
         tooltip=[alt.Tooltip("score:O", title="Score"), alt.Tooltip("cantidad:Q", title="Licitaciones")],
     ).properties(height=220), t)
 
@@ -305,13 +322,13 @@ def render(db, ahora=None):
     with st.container(border=True, key="lcard_pan_2"):
         cal = datos_calendario(todas, ahora)
         _titulo("Próximos cierres",
-                f"Tus oportunidades abiertas hasta su fecha de cierre ({_plural(len(cal), 'licitación', 'licitaciones')}). "
-                "El color indica el score.")
+                f"Cuántos días quedan para postular a cada oportunidad abierta, de la más urgente a la menos urgente "
+                f"({_plural(len(cal), 'licitación', 'licitaciones')}).")
         if not cal:
             _vacio("No tienes oportunidades abiertas en este momento.")
         else:
             st.altair_chart(grafico_calendario(cal, t, ahora), width="stretch")
-            _tabla(cal, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score", "dias": "Días al cierre", "id_externo": "Código"})
+            _tabla(cal, {"titulo": "Licitación", "organismo": "Organismo", "dias": "Días al cierre", "score": "Score", "id_externo": "Código"})
 
     c1, c2 = st.columns([3, 2])
     # --- Oportunidad vs. riesgo ---
