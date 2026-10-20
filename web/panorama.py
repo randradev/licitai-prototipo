@@ -156,7 +156,8 @@ def datos_calibracion(licitaciones):
 
 def _config(chart, t):
     """Chrome recesivo: grilla y ejes en hairline, texto en tintas de texto."""
-    return (chart.configure_view(stroke=None)
+    return (chart.configure(background="transparent")   # El fondo lo pone la tarjeta
+            .configure_view(stroke=None)
             .configure_axis(gridColor=t["grid"], domainColor=t["eje"], tickColor=t["eje"],
                             labelColor=t["muted"], titleColor=t["texto2"], labelFontSize=12, titleFontSize=12,
                             titleFontWeight="normal")
@@ -261,45 +262,53 @@ def _tabla(df, columnas):
         st.dataframe(pd.DataFrame(df).rename(columns=columnas)[list(columnas.values())], hide_index=True, width="stretch")
 
 
+def _titulo(texto):
+    st.markdown(f"##### {texto}")
+
+
 def render(db, ahora=None):
-    """Dibujar la pestaña Panorama."""
+    """Dibujar la página Panorama: cada gráfico en su tarjeta."""
     t = _tema()
     todas = db.obtener_licitaciones()
     ejecuciones = db.obtener_ejecuciones()
 
     # Filtro único que acota todo lo que mira hacia atrás (el calendario mira hacia adelante)
-    etiqueta_periodo = st.selectbox("Periodo", list(PERIODOS), index=1, key="panorama_periodo")
+    c_filtro, _ = st.columns([1, 3])
+    etiqueta_periodo = c_filtro.selectbox("Periodo", list(PERIODOS), index=1, key="panorama_periodo")
     dias = PERIODOS[etiqueta_periodo]
     periodo = en_periodo(todas, dias, ahora)
 
     # --- Embudo ---
-    st.markdown("#### Embudo de filtrado")
-    embudo = datos_embudo(todas, ejecuciones, dias, ahora)
-    if not embudo:
-        st.info("Aún no hay sincronizaciones registradas en este periodo. El embudo se llena a partir de la próxima ejecución.")
-    else:
-        st.caption(f"De todo lo publicado en el portal, cuánto pasa cada filtro. {len(ejecuciones)} ejecuciones registradas en total.")
-        st.altair_chart(grafico_embudo(embudo, t), width="stretch")
-        _tabla(embudo, {"etapa": "Etapa", "cantidad": "Cantidad"})
+    with st.container(border=True, key="lcard_pan_1"):
+        _titulo("Embudo de filtrado")
+        embudo = datos_embudo(todas, ejecuciones, dias, ahora)
+        if not embudo:
+            st.info("Aún no hay sincronizaciones registradas en este periodo. El embudo se llena a partir de la próxima ejecución.",
+                    icon=":material/info:")
+        else:
+            st.caption(f"De todo lo publicado en el portal, cuánto pasa cada filtro. {len(ejecuciones)} ejecuciones registradas en total.")
+            st.altair_chart(grafico_embudo(embudo, t), width="stretch")
+            _tabla(embudo, {"etapa": "Etapa", "cantidad": "Cantidad"})
 
     # --- Calendario ---
-    st.markdown("#### Calendario de cierres")
-    cal = datos_calendario(todas, ahora)
-    if not cal:
-        st.info("No hay oportunidades activas abiertas.")
-    else:
-        st.caption(f"Oportunidades activas (analizadas y favoritas) aún abiertas, de la publicación al cierre. n = {len(cal)}. "
-                   "No depende del periodo seleccionado.")
-        st.altair_chart(grafico_calendario(cal, t, ahora), width="stretch")
-        _tabla(cal, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score IA", "dias": "Días al cierre", "id_externo": "ID"})
+    with st.container(border=True, key="lcard_pan_2"):
+        _titulo("Calendario de cierres")
+        cal = datos_calendario(todas, ahora)
+        if not cal:
+            st.info("No hay oportunidades activas abiertas.", icon=":material/info:")
+        else:
+            st.caption(f"Oportunidades activas (analizadas y favoritas) aún abiertas, hasta su cierre. n = {len(cal)}. "
+                       "No depende del periodo seleccionado.")
+            st.altair_chart(grafico_calendario(cal, t, ahora), width="stretch")
+            _tabla(cal, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score IA", "dias": "Días al cierre", "id_externo": "ID"})
 
     c1, c2 = st.columns([3, 2])
     # --- Oportunidad vs. riesgo ---
-    with c1:
-        st.markdown("#### Oportunidad vs. riesgo de pago")
+    with c1, st.container(border=True, height="stretch", key="lcard_pan_3"):
+        _titulo("Oportunidad vs. riesgo de pago")
         riesgo = datos_riesgo(periodo)
         if not riesgo:
-            st.info("Sin licitaciones con score y reclamos de pago en el periodo.")
+            st.info("Sin licitaciones con score y reclamos de pago en el periodo.", icon=":material/info:")
         else:
             st.caption(f"n = {len(riesgo)}. Los reclamos son un conteo absoluto: un organismo que compra mucho "
                        "acumula más reclamos, así que compáralo con su volumen antes de concluir.")
@@ -307,31 +316,32 @@ def render(db, ahora=None):
             _tabla(riesgo, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score IA", "reclamos": "Reclamos"})
 
     # --- Distribución de scores ---
-    with c2:
-        st.markdown("#### Distribución de scores")
+    with c2, st.container(border=True, height="stretch", key="lcard_pan_4"):
+        _titulo("Distribución de scores")
         hist = datos_histograma(periodo)
         n_hist = sum(f["cantidad"] for f in hist)
         if not n_hist:
-            st.info("Sin análisis en el periodo.")
+            st.info("Sin análisis en el periodo.", icon=":material/info:")
         else:
             st.caption(f"n = {n_hist}. Si casi todo se concentra en pocos valores, el score discrimina poco.")
             st.altair_chart(grafico_histograma(hist, t), width="stretch")
             _tabla(hist, {"score": "Score", "cantidad": "Licitaciones"})
 
     # --- Calibración ---
-    st.markdown("#### Calibración: score IA vs. tu evaluación")
-    cal_data = datos_calibracion(periodo)
-    if cal_data["total_eval_score"]:
-        r, n = cal_data["eval_score"], cal_data["total_eval_score"]
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Score acertado", f"{round(100 * r['acertado'] / n)} %")
-        m2.metric("Score muy alto", f"{round(100 * r['muy_alto'] / n)} %")
-        m3.metric("Score muy bajo", f"{round(100 * r['muy_bajo'] / n)} %")
-        st.caption(f"Sobre {n} evaluaciones del score.")
-    if cal_data["total"] < MIN_EVALUACIONES_CALIBRACION:
-        st.info(f"Llevas {cal_data['total']} de {MIN_EVALUACIONES_CALIBRACION} evaluaciones necesarias para dibujar la calibración. "
-                "Evalúa análisis desde el detalle de cada licitación (sección «Tu evaluación»).")
-    else:
-        st.caption(f"n = {cal_data['total']}. Si el score sirve, el porcentaje debería subir con el tramo.")
-        st.altair_chart(grafico_calibracion(cal_data["tramos"], t), width="stretch")
-        _tabla(cal_data["tramos"], {"tramo": "Tramo", "n": "Evaluadas", "si": "Sí", "tal_vez": "Tal vez", "no": "No", "pct_si": "% sí"})
+    with st.container(border=True, key="lcard_pan_5"):
+        _titulo("Calibración: score IA vs. tu evaluación")
+        cal_data = datos_calibracion(periodo)
+        if cal_data["total_eval_score"]:
+            r, n = cal_data["eval_score"], cal_data["total_eval_score"]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Score acertado", f"{round(100 * r['acertado'] / n)} %")
+            m2.metric("Score muy alto", f"{round(100 * r['muy_alto'] / n)} %")
+            m3.metric("Score muy bajo", f"{round(100 * r['muy_bajo'] / n)} %")
+            st.caption(f"Sobre {n} evaluaciones del score.")
+        if cal_data["total"] < MIN_EVALUACIONES_CALIBRACION:
+            st.info(f"Llevas {cal_data['total']} de {MIN_EVALUACIONES_CALIBRACION} evaluaciones necesarias para dibujar la calibración. "
+                    "Evalúa análisis desde el detalle de cada licitación (sección «Tu evaluación»).", icon=":material/rate_review:")
+        else:
+            st.caption(f"n = {cal_data['total']}. Si el score sirve, el porcentaje debería subir con el tramo.")
+            st.altair_chart(grafico_calibracion(cal_data["tramos"], t), width="stretch")
+            _tabla(cal_data["tramos"], {"tramo": "Tramo", "n": "Evaluadas", "si": "Sí", "tal_vez": "Tal vez", "no": "No", "pct_si": "% sí"})

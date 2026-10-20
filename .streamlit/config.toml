@@ -5,3 +5,29 @@ toolbarMode = "minimal"
 
 [browser]
 gatherUsageStats = false
+
+# --- Tema (común a claro y oscuro) ---
+# Colores de la paleta de referencia usada en los gráficos (web/panorama.py)
+[theme]
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+baseFontSize = 15
+baseRadius = "0.6rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+headingFontWeights = [700, 650, 600, 600, 600, 600]
+
+[theme.light]
+primaryColor = "#2a78d6"
+backgroundColor = "#f6f6f3"
+secondaryBackgroundColor = "#ecebe6"
+textColor = "#1a1a19"
+borderColor = "#e1e0d9"
+linkColor = "#256abf"
+
+[theme.dark]
+primaryColor = "#3987e5"
+backgroundColor = "#0f0f0e"
+secondaryBackgroundColor = "#232321"
+textColor = "#f0efec"
+borderColor = "#2c2c2a"
+linkColor = "#6da7ec"

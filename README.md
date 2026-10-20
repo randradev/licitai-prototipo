@@ -43,8 +43,12 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 | `core/config.py` | Variables de entorno y constantes (umbrales del score, límites). |
 | `core/migrar_datos.py` | Corrección única de los datos guardados por versiones anteriores. |
 | `core/exportar.py` | Exportación a JSON y CSV independiente del esquema SQLite. |
-| `web/app.py` | Dashboard Streamlit. |
-| `web/panorama.py` | Pestaña de visualizaciones (preparación de datos + gráficos Altair). |
+| `web/app.py` | Punto de entrada del dashboard: tema, estilos y navegación superior. |
+| `web/paginas/*.py` | Una sección por archivo (Oportunidades, Favoritas, Archivo, Cola, Panorama, Perfil). |
+| `web/vistas.py` | Contenido de cada sección: tarjetas, filtros, formularios y helpers de presentación. |
+| `web/estilos.py` | CSS de tarjetas, insignias y chips, con colores para tema claro y oscuro. |
+| `web/panorama.py` | Visualizaciones: preparación de datos y gráficos Altair. |
+| `.streamlit/config.toml` | Tema de Streamlit: tipografía Inter, colores y bordes. Si no hay internet, se usa la fuente del sistema. |
 
 **Estados de una licitación:** `pendiente` (registrada) → `extraido` (texto de la ficha guardado) → `analizado` → `favorita` / `archivada`. `error`: agotó los reintentos o cerró antes de procesarse.
 

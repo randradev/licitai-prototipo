@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Helpers de presentación y botones principales con streamlit.testing (BD temporal)."""
+"""Helpers de presentación y páginas con streamlit.testing (BD temporal)."""
 
 import json
 import os
@@ -10,26 +10,21 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from core.database_mgr import DatabaseManager
+from web import vistas as helpers
 
 APP = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "app.py")
 AHORA = datetime(2026, 10, 20, 12, 0)
 
 
-@pytest.fixture
-def helpers():
-    import web.app as app
-    return app
-
-
-def test_score_y_color(helpers):
+def test_score_y_nivel():
     assert helpers.score_de({"score_ia": None}) is None
     assert helpers.score_de({"score_ia": "8"}) == 8
-    assert helpers.color_score(None) == "⚪"
-    assert helpers.color_score(7) == "🟢" and helpers.color_score(4) == "🟡" and helpers.color_score(3) == "🔴"
+    assert helpers.nivel_score(None) == "nulo"
+    assert helpers.nivel_score(7) == "alto" and helpers.nivel_score(4) == "medio" and helpers.nivel_score(3) == "bajo"
     assert helpers.texto_score(None) == "Sin score"
 
 
-def test_info_pago_distingue_procedencia(helpers):
+def test_info_pago_distingue_procedencia():
     assert helpers.info_pago({"reclamos_pago_n": None, "reclamo_pago": None}) == (None, None)
     fuente, ia = helpers.info_pago({"reclamos_pago_n": 180, "reclamo_pago": "Riesgo alto"})
     assert "180" in fuente and "fuente" in fuente and ia == "Riesgo alto"
@@ -37,7 +32,7 @@ def test_info_pago_distingue_procedencia(helpers):
     assert helpers.info_pago({"reclamos_pago_n": 0, "reclamo_pago": "No informado"})[1] is None
 
 
-def test_agrupar_por_fecha_cronologico_con_formatos_mixtos(helpers):
+def test_agrupar_por_fecha_cronologico_con_formatos_mixtos():
     # BD antigua: mezcla dd/mm/aaaa con ISO; el orden debe seguir siendo cronológico
     lista = [{"fecha_publicacion": f, "id_externo": f or "n"} for f in ["30/09/2026", None, "2027-01-10", "2026-10-20"]]
     etiquetas = [e for e, _ in helpers.agrupar_por_fecha(lista)]
@@ -45,21 +40,37 @@ def test_agrupar_por_fecha_cronologico_con_formatos_mixtos(helpers):
                          "Fecha de publicación no disponible"]
 
 
-def test_titulo_de(helpers):
+def test_titulo_de():
     assert helpers.titulo_de({"id_externo": "X", "titulo": "Sin título"}, {"titulo_recuperado": "IA"}) == "IA"
     assert helpers.titulo_de({"id_externo": "X", "titulo": "Real"}, {"titulo_recuperado": "IA"}) == "Real"
     assert helpers.titulo_de({"id_externo": "X", "titulo": None}) == "Licitación X"
 
 
-def test_etiqueta_cierre(helpers):
+def test_etiqueta_y_urgencia_de_cierre():
     def et(cierre):
-        return helpers.etiqueta_cierre({"fecha_cierre": cierre}, AHORA)
-    assert et("2026-10-20T18:00:00") == "⏰ cierra hoy"
-    assert et("2026-10-21T10:00:00") == "⏰ cierra mañana"
-    assert et("2026-10-25T10:00:00") == "⏰ cierra en 5 días"
-    assert et("2026-11-30T10:00:00") == "cierra en 41 días"
-    assert et("2026-10-20T09:00:00") == "cerrada"
-    assert et(None) == "cierre sin informar"
+        l = {"fecha_cierre": cierre}
+        return helpers.etiqueta_cierre(l, AHORA), helpers.urgencia_cierre(l, AHORA)
+    assert et("2026-10-20T18:00:00") == ("Cierra hoy", "bajo")
+    assert et("2026-10-21T10:00:00") == ("Cierra mañana", "bajo")
+    assert et("2026-10-25T10:00:00") == ("Cierra en 5 días", "medio")
+    assert et("2026-11-30T10:00:00") == ("Cierra en 41 días", "")
+    assert et("2026-10-20T09:00:00") == ("Cerrada", "")
+    assert et(None) == ("Cierre sin informar", "")
+
+
+def test_region_corta():
+    assert helpers.region_corta("Región de los Lagos") == "Los Lagos"
+    assert helpers.region_corta("Región de la Araucanía") == "Araucanía"
+    assert helpers.region_corta("Región del Maule") == "Maule"
+    assert helpers.region_corta("Región Metropolitana de Santiago") == "Metropolitana de Santiago"
+
+
+def test_tarjeta_html_escapa_texto_externo():
+    """El título y el organismo vienen del portal/IA: nunca deben inyectar HTML."""
+    html = helpers.html_tarjeta({"id_externo": "X<1>", "titulo": "<script>alert(1)</script>", "organismo": "A & B",
+                                 "score_ia": 9, "fecha_cierre": None, "region": "Región del Maule", "reclamos_pago_n": 5})
+    assert "<script>" not in html and "&lt;script&gt;" in html and "A &amp; B" in html and "X&lt;1&gt;" in html
+    assert "l-alto" in html and "Maule" in html and "5 reclamos de pago" in html
 
 
 LISTA = [
@@ -78,7 +89,7 @@ def _ids(lista):
     return [l["id_externo"] for l in lista]
 
 
-def test_filtrar_y_ordenar(helpers):
+def test_filtrar_y_ordenar():
     f = helpers.filtrar_y_ordenar
     assert _ids(f(LISTA, orden="Cierre más próximo", ahora=AHORA)) == ["D", "B", "A", "C"]
     assert _ids(f(LISTA, orden="Cierre más próximo", ocultar_cerradas=True, ahora=AHORA)) == ["B", "A", "C"]
@@ -90,13 +101,13 @@ def test_filtrar_y_ordenar(helpers):
     assert _ids(f(LISTA, regiones=["Región del Maule"], orden="Mayor score", ahora=AHORA)) == ["A", "D"]
 
 
-def test_metricas_resumen(helpers):
+def test_metricas_resumen():
     lista = [dict(l, estado="analizado") for l in LISTA] + [{"id_externo": "E", "estado": "error"}]
     m = helpers.metricas_resumen(lista, AHORA)
     assert m == {"activas": 3, "cierran_7": 1, "score_promedio": 7.5, "en_cola": 1}
 
 
-def test_trazabilidad_y_evaluacion_desactualizada(helpers):
+def test_trazabilidad_y_evaluacion_desactualizada():
     assert "sin registro" in helpers.texto_trazabilidad({})
     texto = helpers.texto_trazabilidad({"analisis_fecha": "2026-10-20T10:00:00", "analisis_modelo": "m", "analisis_prompt_version": "v1"})
     assert "20/10/2026 10:00" in texto and "m" in texto and "v1" in texto
@@ -105,7 +116,7 @@ def test_trazabilidad_y_evaluacion_desactualizada(helpers):
     assert not helpers.evaluacion_desactualizada({"analisis_fecha": "2026-10-20T10:00:00"})
 
 
-# --- App completa ---
+# --- App completa (navegación superior: una página por archivo en web/paginas/) ---
 
 @pytest.fixture
 def app_db(tmp_path, monkeypatch):
@@ -131,28 +142,44 @@ def _boton(at, key):
     return next(b for b in at.button if b.key == key)
 
 
-def _app():
-    return AppTest.from_file(APP, default_timeout=30).run()
+def _app(pagina=None):
+    at = AppTest.from_file(APP, default_timeout=30)
+    if pagina:
+        at.switch_page(f"paginas/{pagina}.py")
+    return at.run()
 
 
-def test_app_renderiza_sin_excepciones_con_datos_problematicos(app_db):
-    at = _app()
+@pytest.mark.parametrize("pagina", [None, "favoritas", "archivo", "cola", "panorama", "perfil"])
+def test_todas_las_paginas_renderizan_sin_excepciones(app_db, pagina):
+    at = _app(pagina)
     assert not at.exception
-    assert any("Configura al menos una keyword" in w.value for w in at.sidebar.warning)
+    assert any("Configura al menos una keyword" in w.value for w in at.warning)
+
+
+def test_oportunidades_metricas(app_db):
+    at = _app()
     etiquetas = [m.label for m in at.metric]
     assert "Oportunidades activas" in etiquetas and "Cierran en ≤ 7 días" in etiquetas
 
 
-def test_botones_favorita_archivar_restaurar_reintentar(app_db):
+def test_botones_de_estado_en_cada_pagina(app_db):
     at = _app()
     _boton(at, "fav_A").click().run()
     assert app_db.obtener_licitacion("A")["estado"] == "favorita"
-    _boton(at, "re_R").click().run()
-    assert app_db.obtener_licitacion("R")["estado"] == "analizado"
-    _boton(at, "retry_E").click().run()
-    assert app_db.obtener_licitacion("E")["estado"] == "pendiente"
     _boton(at, "arc_N").click().run()
     assert app_db.obtener_licitacion("N")["estado"] == "archivada"
+
+    at = _app("archivo")
+    _boton(at, "re_R").click().run()
+    assert app_db.obtener_licitacion("R")["estado"] == "analizado"
+
+    at = _app("cola")
+    _boton(at, "retry_E").click().run()
+    assert app_db.obtener_licitacion("E")["estado"] == "pendiente"
+
+    at = _app("favoritas")
+    _boton(at, "back_F").click().run()
+    assert app_db.obtener_licitacion("F")["estado"] == "analizado"
     assert not at.exception
 
 
@@ -160,12 +187,12 @@ def test_filtro_de_texto_en_la_ui(app_db):
     at = _app()
     at.text_input(key="f_txt_analizadas").input("prueba A").run()
     assert not at.exception
-    assert any(e.label.endswith("cierra en 5 días") and "prueba A" in e.label for e in at.expander)
-    assert not any("prueba C" in e.label for e in at.expander)
+    claves = {b.key for b in at.button}
+    assert "fav_A" in claves and "fav_C" not in claves and "fav_N" not in claves
 
 
 def test_notas_persisten(app_db):
-    at = _app()
+    at = _app("favoritas")
     at.text_area(key="txt_F").input("Costos revisados")
     at.checkbox(key="chk_bases_leidas_F").check()
     next(b for b in at.button if "Guardar notas" in b.label).click().run()
@@ -173,8 +200,9 @@ def test_notas_persisten(app_db):
     assert fila["notas"] == "Costos revisados"
     assert json.loads(fila["checklist_json"])["bases_leidas"] is True
     # Nueva sesión: los valores se recargan desde la BD
-    at2 = _app()
+    at2 = _app("favoritas")
     assert at2.text_area(key="txt_F").value == "Costos revisados"
+    assert at2.checkbox(key="chk_bases_leidas_F").value is True
 
 
 def test_evaluacion_se_guarda(app_db):
@@ -202,8 +230,15 @@ def _con_ficha(db, id_ext):
     conn.close()
 
 
-def test_boton_reanalizar_guarda_nuevo_analisis(app_db, monkeypatch):
+def _gemini_falso(monkeypatch, analizar):
     import core.ai_analyst as ai
+    monkeypatch.setenv("GEMINI_API_KEY", "falsa")
+    monkeypatch.setattr(ai.genai, "configure", lambda **kw: None)
+    monkeypatch.setattr(ai.genai, "GenerativeModel", lambda *a, **kw: object())
+    monkeypatch.setattr(ai.AIAnalyst, "analizar_licitacion", analizar)
+
+
+def test_boton_reanalizar_guarda_nuevo_analisis(app_db, monkeypatch):
     _con_ficha(app_db, "F")
     llamadas = []
 
@@ -213,11 +248,8 @@ def test_boton_reanalizar_guarda_nuevo_analisis(app_db, monkeypatch):
         self.db.guardar_analisis_ia(id_ext, 4, data, modelo="m", prompt_version="v")
         return data
 
-    monkeypatch.setenv("GEMINI_API_KEY", "falsa")
-    monkeypatch.setattr(ai.genai, "configure", lambda **kw: None)
-    monkeypatch.setattr(ai.genai, "GenerativeModel", lambda *a, **kw: object())
-    monkeypatch.setattr(ai.AIAnalyst, "analizar_licitacion", analizar_falso)
-    at = _app()
+    _gemini_falso(monkeypatch, analizar_falso)
+    at = _app("favoritas")
     _boton(at, "iaf_F").click().run()
     assert llamadas == ["F"]
     fila = app_db.obtener_licitacion("F")
@@ -227,30 +259,27 @@ def test_boton_reanalizar_guarda_nuevo_analisis(app_db, monkeypatch):
 
 def test_boton_reanalizar_fallido_conserva_anterior(app_db, monkeypatch):
     import core.ai_analyst as ai
-    _con_ficha(app_db, "F")
+    _con_ficha(app_db, "A")
 
     def analizar_roto(self, id_ext):
         raise ai.AnalisisFallido("Respuesta de IA inválida")
 
-    monkeypatch.setenv("GEMINI_API_KEY", "falsa")
-    monkeypatch.setattr(ai.genai, "configure", lambda **kw: None)
-    monkeypatch.setattr(ai.genai, "GenerativeModel", lambda *a, **kw: object())
-    monkeypatch.setattr(ai.AIAnalyst, "analizar_licitacion", analizar_roto)
-    antes = app_db.obtener_licitacion("F")
+    _gemini_falso(monkeypatch, analizar_roto)
+    antes = app_db.obtener_licitacion("A")
     at = _app()
-    _boton(at, "iaf_F").click().run()
-    despues = app_db.obtener_licitacion("F")
+    _boton(at, "ia_A").click().run()
+    despues = app_db.obtener_licitacion("A")
     assert (despues["score_ia"], despues["analisis_ia_json"]) == (antes["score_ia"], antes["analisis_ia_json"])
     assert any("se conserva el análisis anterior" in e.value for e in at.error)
 
 
 def test_boton_reanalizar_solo_si_hay_ficha(app_db):
-    at = _app()
+    at = _app("favoritas")
     assert not any(b.key == "iaf_F" for b in at.button)   # Sin texto extraído no hay nada que re-analizar
 
 
 def test_guardar_perfil(app_db):
-    at = _app()
+    at = _app("perfil")
     next(ta for ta in at.text_area if ta.label == "Keywords Positivas").input("reactivos, ")
     next(b for b in at.button if "Guardar Cambios" in b.label).click().run()
     assert app_db.obtener_perfil()["keywords_pos"] == "reactivos, "
@@ -266,8 +295,9 @@ def test_panorama_con_ejecuciones_y_evaluaciones(app_db):
         app_db.guardar_licitacion({"id_externo": id_, "titulo": f"Evaluada {i}"})
         app_db.guardar_analisis_ia(id_, 3 + i % 7, {"veredicto": "ok"})
         app_db.guardar_evaluacion(id_, "acertado", ("si", "no", "tal_vez")[i % 3])
-    at = _app()
+    at = _app("panorama")
     assert not at.exception
     textos = " ".join(m.value for m in at.markdown)
     assert "Embudo de filtrado" in textos and "Calibración" in textos
     assert not any("evaluaciones necesarias" in i.value for i in at.info)
+    assert {b.label for b in at.get("download_button")} >= {"JSON", "CSV"}

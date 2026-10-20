@@ -171,7 +171,7 @@ def test_evaluacion_valida_e_invalida(db):
 
 
 def test_reanalisis_conserva_evaluacion_y_queda_desactualizada(db):
-    import web.app as app
+    from web import vistas as app
     db.guardar_licitacion({"id_externo": "X", "titulo": "T"})
     db.guardar_analisis_ia("X", 7, {"veredicto": "a"})
     db.guardar_evaluacion("X", "acertado", "si")
