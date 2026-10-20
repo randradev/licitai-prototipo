@@ -1,3 +1,4 @@
+
 # Python
 __pycache__/
 *.py[cod]
@@ -5,8 +6,12 @@ __pycache__/
 venv/
 .env
 
-# Bases de datos 
+# Bases de datos
 *.db
+*.db.lock
+
+# Logs
+*.log
 
 # Streamlit y entorno
 .streamlit/
@@ -15,3 +20,6 @@ venv/
 
 # Chrome Driver
 chromedriver
+
+# Antigravity / Gemini
+.gemini/
