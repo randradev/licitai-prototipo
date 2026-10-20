@@ -276,6 +276,43 @@ def _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ah
     return resumen
 
 
+def reanalizar_lote(db, ids, analyst=None, al_avanzar=None):
+    """
+    Re-analizar con la IA una lista de licitaciones (p. ej. tras cambiar el perfil).
+
+    Usa el mismo bloqueo que el pipeline. Un fallo individual conserva el
+    análisis anterior de esa licitación; la cuota agotada detiene el lote.
+
+    Args:
+        ids (list): IDs externos a re-analizar.
+        al_avanzar (callable, optional): al_avanzar(hechas, total) tras cada licitación.
+
+    Returns:
+        dict: total, reanalizadas, fallidas (lista de (id, motivo)) y detenido_por.
+    """
+    config.configurar_logging()
+    resultado = {"total": len(ids), "reanalizadas": 0, "fallidas": [], "detenido_por": None}
+    try:
+        with bloqueo_pipeline(db.db_path):
+            analyst = analyst or AIAnalyst(db)
+            for i, id_ext in enumerate(ids):
+                try:
+                    analyst.analizar_licitacion(id_ext)
+                    resultado["reanalizadas"] += 1
+                except CuotaAgotada as e:
+                    resultado["detenido_por"] = str(e)
+                    break
+                except AnalisisFallido as e:
+                    resultado["fallidas"].append((id_ext, str(e)))
+                if al_avanzar:
+                    al_avanzar(i + 1, len(ids))
+    except (PipelineEnCurso, ValueError) as e:   # ValueError: falta GEMINI_API_KEY
+        resultado["detenido_por"] = str(e)
+    log.info(f"🔁 Re-análisis en lote: {resultado['reanalizadas']}/{resultado['total']} "
+             f"({len(resultado['fallidas'])} fallidas){' — ' + resultado['detenido_por'] if resultado['detenido_por'] else ''}")
+    return resultado
+
+
 def describir_resumen(resumen):
     """
     Traducir el resumen del pipeline a un mensaje para el usuario.

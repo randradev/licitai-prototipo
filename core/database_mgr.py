@@ -44,6 +44,7 @@ COLUMNAS_NUEVAS = {
     "analisis_modelo": "TEXT",         # Modelo de IA que generó el análisis
     "analisis_prompt_version": "TEXT", # Versión del prompt (core/ai_analyst.py)
     "analisis_fecha": "TEXT",          # Momento del análisis (ISO, hora local)
+    "analisis_perfil_version": "TEXT", # Versión del perfil usada (core.parsing.version_perfil)
     # Evaluación humana del análisis (dataset para medir la calidad del score)
     "eval_score": "TEXT",              # 'acertado' | 'muy_alto' | 'muy_bajo'
     "eval_postularia": "TEXT",         # 'si' | 'tal_vez' | 'no'
@@ -356,7 +357,8 @@ class DatabaseManager:
             conn.execute(query, (id_externo,))
             conn.commit()
 
-    def guardar_analisis_ia(self, id_externo, score, analisis_json, motivo=None, modelo=None, prompt_version=None):
+    def guardar_analisis_ia(self, id_externo, score, analisis_json, motivo=None, modelo=None, prompt_version=None,
+                            perfil_version=None):
         """
         Persistir los resultados generados por el modelo de IA.
 
@@ -375,18 +377,19 @@ class DatabaseManager:
             motivo (str, optional): Justificación de archivo en scores bajos.
             modelo (str, optional): Modelo de IA utilizado.
             prompt_version (str, optional): Versión del prompt utilizado.
+            perfil_version (str, optional): Versión del perfil de negocio utilizado.
         """
         query = """
             UPDATE licitaciones
             SET score_ia = ?, analisis_ia_json = ?, motivo_archivo = ?,
-                analisis_modelo = ?, analisis_prompt_version = ?, analisis_fecha = ?,
+                analisis_modelo = ?, analisis_prompt_version = ?, analisis_fecha = ?, analisis_perfil_version = ?,
                 estado = CASE WHEN estado IN ('favorita', 'archivada') THEN estado ELSE 'analizado' END,
                 intentos = 0, ultimo_error = NULL
             WHERE id_externo = ?
         """
         with self._get_connection() as conn:
             conn.execute(query, (score, json.dumps(analisis_json, ensure_ascii=False), motivo,
-                                 modelo, prompt_version, _ahora_iso(), id_externo))
+                                 modelo, prompt_version, _ahora_iso(), perfil_version, id_externo))
             conn.commit()
 
     def guardar_evaluacion(self, id_externo, eval_score, postularia, comentario=None):

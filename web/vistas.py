@@ -20,8 +20,8 @@ import streamlit as st
 from core import config
 from core.database_mgr import DatabaseManager
 from core.exportar import a_csv, a_json
-from core.parsing import (cargar_analisis_guardado, dias_para_cierre, es_valor_util, fecha_iso, formatear_fecha,
-                          normalizar_keywords, normalizar_texto, parsear_fecha_hora)
+from core.parsing import (cargar_analisis_guardado, coincide_keywords, dias_para_cierre, es_valor_util, fecha_iso,
+                          formatear_fecha, normalizar_keywords, normalizar_texto, parsear_fecha_hora, version_perfil)
 
 log = logging.getLogger("licitai.web")
 
@@ -125,7 +125,32 @@ def texto_trazabilidad(licit):
     if not licit.get('analisis_fecha'):
         return "Análisis sin registro de modelo ni versión (anterior a la trazabilidad)."
     return (f"Análisis del {formatear_fecha(licit['analisis_fecha'], con_hora=True)} · "
-            f"modelo {licit.get('analisis_modelo') or '?'} · prompt {licit.get('analisis_prompt_version') or '?'}")
+            f"modelo {licit.get('analisis_modelo') or '?'} · prompt {licit.get('analisis_prompt_version') or '?'} · "
+            f"perfil {licit.get('analisis_perfil_version') or '?'}")
+
+
+def analisis_con_perfil_anterior(licit, version_actual):
+    """
+    True si el análisis vigente se hizo con un perfil distinto al actual.
+    Los análisis sin versión registrada (anteriores a esta función) también cuentan.
+    """
+    return bool(licit.get('analisis_ia_json')) and licit.get('analisis_perfil_version') != version_actual
+
+
+def afectados_por_perfil(licitaciones, version_actual, estados=('analizado', 'favorita')):
+    """Análisis activos hechos con un perfil anterior (candidatos a re-analizar)."""
+    return [l for l in licitaciones if l.get('estado') in estados and l.get('descripcion_pro')
+            and analisis_con_perfil_anterior(l, version_actual)]
+
+
+def cola_fuera_de_perfil(licitaciones, perfil):
+    """Pendientes/extraídas cuyo título ya no coincide con las keywords del perfil."""
+    positivas = normalizar_keywords((perfil or {}).get('keywords_pos'))
+    negativas = normalizar_keywords((perfil or {}).get('keywords_neg'))
+    if not positivas:
+        return []
+    return [l for l in licitaciones if l.get('estado') in ('pendiente', 'extraido')
+            and not coincide_keywords(l.get('titulo'), positivas, negativas)]
 
 
 def evaluacion_desactualizada(licit):
@@ -209,7 +234,7 @@ def _chip(texto, icono=None, nivel=""):
     return f'<span class="l-chip {"l-" + nivel if nivel else ""}">{ico}{escape(str(texto))}</span>'
 
 
-def html_tarjeta(licit, analisis=None, ahora=None):
+def html_tarjeta(licit, analisis=None, ahora=None, perfil_anterior=False):
     """Cabecera de tarjeta: insignia de score, título, organismo y chips de contexto."""
     score = score_de(licit)
     nivel = nivel_score(score)
@@ -220,6 +245,8 @@ def html_tarjeta(licit, analisis=None, ahora=None):
         chips.append(_chip(region_corta(licit['region']), "location_on"))
     if licit.get('reclamos_pago_n') is not None:
         chips.append(_chip(f"{licit['reclamos_pago_n']} reclamos de pago", "payments"))
+    if perfil_anterior:
+        chips.append(_chip("Analizada con un perfil anterior", "history", "medio"))
     return (f'<div class="l-tarjeta">{insignia}<div class="l-cuerpo">'
             f'<p class="l-titulo">{escape(titulo_de(licit, analisis))}</p>'
             f'<p class="l-org">{escape(organismo_de(licit))} · <span class="l-id">{escape(licit["id_externo"])}</span></p>'
@@ -403,12 +430,13 @@ def _mas_acciones(base, l, clave_reanalizar):
                 _reanalizar(base, l['id_externo'])
 
 
-def tarjeta(base, l, simplificado=False):
+def tarjeta(base, l, simplificado=False, version_actual=None):
     """Una licitación como tarjeta: cabecera HTML, acciones y desplegable con el análisis."""
     an = cargar_analisis_guardado(l.get('analisis_ia_json'))
+    perfil_anterior = bool(version_actual) and analisis_con_perfil_anterior(l, version_actual)
     with st.container(border=True, key=f"lcard_{l['id_externo']}"):
         c1, c2 = st.columns([5, 1.25])
-        c1.html(html_tarjeta(l, an))
+        c1.html(html_tarjeta(l, an, perfil_anterior=perfil_anterior))
         with c2:
             _acciones(base, l)
         with st.expander("Análisis y evaluación" if not simplificado else "Análisis", icon=":material/insights:"):
@@ -438,14 +466,15 @@ def lista_tarjetas(base, lista, clave, simplificado=False, ocultar_cerradas=True
     if not filtradas:
         st.info("Ninguna licitación coincide con los filtros.", icon=":material/filter_alt_off:")
         return
+    version = version_perfil(base.obtener_perfil())
     if orden == "Más recientes":
         for etiqueta, grupo in agrupar_por_fecha(filtradas):
             seccion(etiqueta)
             for l in grupo:
-                tarjeta(base, l, simplificado)
+                tarjeta(base, l, simplificado, version)
     else:
         for l in filtradas:
-            tarjeta(base, l, simplificado)
+            tarjeta(base, l, simplificado, version)
 
 
 # ===================================================================
@@ -476,11 +505,12 @@ def pagina_favoritas():
         st.info("Aún no tienes favoritas. Márcalas desde Oportunidades.", icon=":material/star:")
         return
 
+    version = version_perfil(base.obtener_perfil())
     for l in favs:
         an = cargar_analisis_guardado(l.get('analisis_ia_json'))
         with st.container(border=True, key=f"lcard_fav_{l['id_externo']}"):
             c_head, c_acc = st.columns([5, 1.25])
-            c_head.html(html_tarjeta(l, an))
+            c_head.html(html_tarjeta(l, an, perfil_anterior=bool(version) and analisis_con_perfil_anterior(l, version)))
             with c_acc:
                 if st.button("Quitar", icon=":material/star_half:", key=f"back_{l['id_externo']}", width="stretch",
                              help="Quitar de Favoritas"):
@@ -612,5 +642,55 @@ def pagina_perfil():
             if st.form_submit_button("Guardar Cambios", icon=":material/save:", type="primary"):
                 # regiones: reservado, sin uso en el filtrado
                 base.guardar_perfil(keywords_pos, keywords_neg, perfil.get('regiones'), bio)
-                st.session_state['ultimo_mensaje'] = ("success", "Perfil actualizado")
+                cambio = version_perfil(base.obtener_perfil()) != version_perfil(perfil)
+                st.session_state['ultimo_mensaje'] = ("success", "Perfil actualizado." + (
+                    " Los análisis existentes no cambian: revisa abajo cuáles se hicieron con el perfil anterior." if cambio else ""))
+                st.rerun()
+
+    _impacto_perfil(base, base.obtener_perfil())
+
+
+def _impacto_perfil(base, perfil):
+    """Qué datos quedaron desalineados con el perfil actual y cómo corregirlos (siempre a pedido)."""
+    version = version_perfil(perfil)
+    if not version:
+        return
+    todas = base.obtener_licitaciones()
+    afectados = afectados_por_perfil(todas, version)
+    fuera = cola_fuera_de_perfil(todas, perfil)
+
+    with st.container(border=True, key="lcard_perfil_impacto"):
+        seccion("Impacto del perfil actual")
+        st.caption(f"Versión del perfil: {version}. Cambiar el perfil no modifica los análisis existentes; "
+                   "aquí puedes alinearlos cuando quieras.")
+        if not afectados and not fuera:
+            st.html('<div class="l-dato">Todo está alineado con el perfil actual.</div>')
+            return
+
+        if afectados:
+            st.markdown(f"**{len(afectados)}** oportunidades activas se analizaron con un perfil anterior "
+                        "(o antes de registrar el perfil): su score puede no reflejar el perfil actual.")
+            confirmar = st.checkbox(f"Entiendo que esto hará hasta {len(afectados)} llamadas a Gemini", key="conf_reanalisis")
+            if st.button(f"Re-analizar {len(afectados)}", icon=":material/refresh:", disabled=not confirmar,
+                         key="btn_reanalizar_lote"):
+                from main import reanalizar_lote
+                barra = st.progress(0.0, text="Re-analizando…")
+                r = reanalizar_lote(base, [l['id_externo'] for l in afectados],
+                                    al_avanzar=lambda hechas, total: barra.progress(hechas / total, text=f"{hechas} de {total}"))
+                texto = f"Re-analizadas {r['reanalizadas']} de {r['total']}."
+                if r["fallidas"]:
+                    texto += f" {len(r['fallidas'])} fallaron y conservan su análisis anterior."
+                if r["detenido_por"]:
+                    texto += f" Detenido: {r['detenido_por']}"
+                nivel = "success" if r["reanalizadas"] == r["total"] else "warning" if r["reanalizadas"] else "error"
+                st.session_state['ultimo_mensaje'] = (nivel, texto)
+                st.rerun()
+
+        if fuera:
+            st.markdown(f"**{len(fuera)}** licitaciones en la cola ya no coinciden con tus keywords y se procesarían igual.")
+            if st.button("Quitar de la cola", icon=":material/playlist_remove:", key="btn_quitar_cola",
+                         help="Pasan a estado error con el motivo; puedes reintentarlas desde Cola."):
+                for l in fuera:
+                    base.marcar_error(l['id_externo'], "Ya no coincide con las keywords del perfil")
+                st.session_state['ultimo_mensaje'] = ("success", f"{len(fuera)} licitaciones quitadas de la cola.")
                 st.rerun()

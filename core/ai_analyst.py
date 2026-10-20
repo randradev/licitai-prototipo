@@ -16,7 +16,7 @@ import os
 import google.generativeai as genai
 
 from core import config
-from core.parsing import parsear_respuesta_ia, validar_analisis
+from core.parsing import parsear_respuesta_ia, validar_analisis, version_perfil
 
 try:
     from google.api_core.exceptions import ResourceExhausted
@@ -181,6 +181,7 @@ class AIAnalyst:
             data_ia.get('motivo_archivo'),
             modelo=self.nombre_modelo,
             prompt_version=PROMPT_VERSION,
+            perfil_version=version_perfil(perfil),
         )
 
         # Completar huecos (nunca sobrescribe datos de la fuente)
