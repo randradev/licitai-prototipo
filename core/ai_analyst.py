@@ -61,10 +61,13 @@ class AIAnalyst:
             raise ValueError("❌ Error Crítico: No se encontró GEMINI_API_KEY en las variables de entorno.")
 
         genai.configure(api_key=api_key)
-        # Modelo configurable vía GEMINI_MODEL; se solicita salida JSON nativa
+        # Modelo configurable vía GEMINI_MODEL; salida JSON nativa y temperatura 0
         self.model = genai.GenerativeModel(
             config.GEMINI_MODEL,
-            generation_config={"response_mime_type": "application/json"},
+            generation_config={
+                "response_mime_type": "application/json",
+                "temperature": config.GEMINI_TEMPERATURE,
+            },
         )
 
     def construir_prompt(self, perfil, licit):

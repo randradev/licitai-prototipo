@@ -12,6 +12,7 @@ Responsabilidades:
    detalles técnicos y cláusulas desde la ficha profunda.
 """
 
+import logging
 import requests
 import os
 import time
@@ -28,9 +29,34 @@ from selenium.webdriver.support import expected_conditions as EC
 from core import config
 from core.parsing import normalizar_keywords, coincide_keywords, esta_cerrada, texto_ficha_valido, extraer_metadatos_ficha
 
+log = logging.getLogger("licitai.scraper")
+
 
 class DriverNoDisponible(Exception):
     """El navegador automatizado no pudo iniciarse (Chrome ausente, sin red, etc.)."""
+
+
+def esperar_texto_estable(driver, max_segundos=None, intervalo=0.5, lecturas_estables=3):
+    """
+    Esperar a que el texto de la página deje de cambiar, en lugar de una pausa fija.
+
+    El portal carga secciones de la ficha de forma asíncrona: se considera lista
+    cuando la longitud del texto se repite en `lecturas_estables` lecturas
+    consecutivas, o al cumplirse `max_segundos` (se devuelve lo obtenido).
+
+    Returns:
+        str: Texto visible del documento principal.
+    """
+    max_segundos = config.SELENIUM_ESPERA_MAX if max_segundos is None else max_segundos
+    limite = time.monotonic() + max_segundos
+    texto, repeticiones = "", 0
+    while True:
+        actual = driver.execute_script("return document.body.innerText;") or ""
+        repeticiones = repeticiones + 1 if len(actual) == len(texto) else 1
+        texto = actual
+        if repeticiones >= lecturas_estables or time.monotonic() >= limite:
+            return texto
+        time.sleep(intervalo)
 
 
 class LicitacionScraper:
@@ -72,7 +98,7 @@ class LicitacionScraper:
         positivas = normalizar_keywords(perfil.get('keywords_pos'))
         negativas = normalizar_keywords(perfil.get('keywords_neg'))
         if not positivas:
-            print("⚠️ No hay palabras clave configuradas en el perfil.")
+            log.warning("⚠️ No hay palabras clave configuradas en el perfil.")
         return positivas, negativas
 
     def descubrir_licitaciones_del_dia(self, fecha=None):
@@ -89,7 +115,7 @@ class LicitacionScraper:
         self.error_descubrimiento = None
         if not self.api_ticket:
             self.error_descubrimiento = "MP_TICKET no configurado en .env"
-            print(f"❌ Error: {self.error_descubrimiento}")
+            log.error(f"❌ Error: {self.error_descubrimiento}")
             return []
 
         # Formatear la fecha según el estándar requerido por la API (DDMMAAAA)
@@ -100,7 +126,7 @@ class LicitacionScraper:
         }
 
         try:
-            print(f"🔍 Buscando licitaciones publicadas el {fecha_consulta}...")
+            log.info(f"🔍 Buscando licitaciones publicadas el {fecha_consulta}...")
             respuesta = requests.get(self.base_url, params=parametros, timeout=config.HTTP_TIMEOUT)
         except requests.Timeout:
             self.error_descubrimiento = f"La API de Mercado Público no respondió en {config.HTTP_TIMEOUT} s"
@@ -121,7 +147,7 @@ class LicitacionScraper:
                     mensaje = datos.get('Mensaje') if isinstance(datos, dict) else None
                     self.error_descubrimiento = f"Respuesta de la API sin 'Listado'{': ' + str(mensaje) if mensaje else ''}"
 
-        print(f"❌ {self.error_descubrimiento}")
+        log.error(f"❌ {self.error_descubrimiento}")
         return []
 
     def filtrar_licitaciones_relevantes(self, lista_bruta, ahora=None):
@@ -148,7 +174,7 @@ class LicitacionScraper:
         # Estado 5 representa 'Publicada', fase activa para participar
         ESTADOS_VIGENTES = [5]
 
-        print(f"🧐 Filtrando {len(lista_bruta)} licitaciones por estado y relevancia...")
+        log.info(f"🧐 Filtrando {len(lista_bruta)} licitaciones por estado y relevancia...")
 
         for licit in lista_bruta:
             codigo = licit.get('CodigoExterno')
@@ -162,7 +188,7 @@ class LicitacionScraper:
             if not self.db.existe_licitacion(codigo):
                 licitaciones_interesantes.append(licit)
 
-        print(f"🎯 Filtro completado: {len(licitaciones_interesantes)} licitaciones nuevas aptas.")
+        log.info(f"🎯 Filtro completado: {len(licitaciones_interesantes)} licitaciones nuevas aptas.")
         return licitaciones_interesantes
 
     def ejecutar_pipeline_descubrimiento(self, fecha=None):
@@ -175,10 +201,10 @@ class LicitacionScraper:
         listado_total = self.descubrir_licitaciones_del_dia(fecha)
 
         if not listado_total:
-            print("👀 No se encontraron licitaciones en el listado general.")
+            log.info("👀 No se encontraron licitaciones en el listado general.")
             return []
 
-        print(f"📋 Total de licitaciones en el listado: {len(listado_total)}")
+        log.info(f"📋 Total de licitaciones en el listado: {len(listado_total)}")
         finales = self.filtrar_licitaciones_relevantes(listado_total)
         return finales
 
@@ -239,9 +265,8 @@ class LicitacionScraper:
             try:
                 WebDriverWait(driver, 3).until(EC.alert_is_present())
                 alert = driver.switch_to.alert
-                print(f"⚠️ Alerta de portal detectada ('{alert.text}'), cerrando...")
+                log.info(f"⚠️ Alerta de portal detectada ('{alert.text}'), cerrando...")
                 alert.accept()
-                time.sleep(1)
                 driver.refresh()
             except Exception:
                 pass  # Lo habitual es que no haya alerta
@@ -278,11 +303,10 @@ class LicitacionScraper:
 
             # Sincronización: Esperar carga real del contenido textual
             wait.until(lambda d: d.find_element(By.TAG_NAME, "body").text.strip() != "")
-            time.sleep(4)
 
             # Extracción robusta: Captura del texto en el nivel principal y sub-iframes
             driver.switch_to.default_content()
-            texto_final = driver.execute_script("return document.body.innerText;") or ""
+            texto_final = esperar_texto_estable(driver)
 
             # Si la captura es insuficiente, iterar sobre iframes internos (anidamiento profundo)
             if len(texto_final.strip()) < 1000:
@@ -306,7 +330,7 @@ class LicitacionScraper:
 
         except Exception as e:
             resultado["error"] = f"{type(e).__name__}: {str(e).splitlines()[0][:200] if str(e) else ''}"
-            print(f"⚠️ Error en extracción de {codigo_licitacion}: {resultado['error']}")
+            log.warning(f"⚠️ Error en extracción de {codigo_licitacion}: {resultado['error']}")
             return resultado
         finally:
             driver.quit()

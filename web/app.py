@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
+import logging
 import streamlit as st
 from core import config
 from core.database_mgr import DatabaseManager
@@ -27,6 +28,9 @@ st.set_page_config(
     page_icon="🤖",
     layout="wide"
 )
+
+config.configurar_logging()
+log = logging.getLogger("licitai.web")
 
 # Ítems del checklist de gestión (clave persistida -> etiqueta)
 CHECKLIST_ITEMS = {"bases_leidas": "Bases leídas", "anexos_preparados": "Anexos preparados"}
@@ -161,10 +165,10 @@ class LicitAIWeb:
         st.sidebar.subheader("🔄 Sincronización")
         st.sidebar.caption(
             f"Consulta las licitaciones publicadas hoy y procesa hasta {config.MAX_PROCESAR} "
-            "de la cola (incluidas pendientes anteriores). Puede tardar varios minutos: "
-            "no interactúes con la página mientras corre."
+            "de la cola (incluidas pendientes anteriores). Puede tardar varios minutos; "
+            "lo que hagas en la página mientras tanto se aplica al terminar."
         )
-        if st.sidebar.button("🚀 Buscar y Analizar Hoy", use_container_width=True):
+        if st.sidebar.button("🚀 Buscar y Analizar Hoy", width="stretch"):
             with st.sidebar.status("Ejecutando proceso...", expanded=True) as status:
                 try:
                     # Importación diferida para evitar dependencias circulares
@@ -173,6 +177,7 @@ class LicitAIWeb:
                     nivel, mensaje = describir_resumen(resumen)
                     status.update(label="Proceso finalizado", state="error" if nivel == "error" else "complete")
                 except Exception as e:
+                    log.exception("Error inesperado en la sincronización")
                     nivel, mensaje = "error", f"Error inesperado en el proceso: {type(e).__name__}: {e}"
                     status.update(label="Error en el proceso", state="error")
             st.session_state['ultimo_mensaje'] = (nivel, mensaje)
@@ -256,15 +261,15 @@ class LicitAIWeb:
                         st.metric("Match IA", texto_score(score))
                         # Controles de estado de la licitación
                         if l['estado'] == 'analizado':
-                            if st.button("⭐ Favorita", key=f"fav_{l['id_externo']}", use_container_width=True):
+                            if st.button("⭐ Favorita", key=f"fav_{l['id_externo']}", width="stretch"):
                                 self.db.cambiar_estado(l['id_externo'], 'favorita'); st.rerun()
-                            if st.button("📁 Archivar", key=f"arc_{l['id_externo']}", use_container_width=True):
+                            if st.button("📁 Archivar", key=f"arc_{l['id_externo']}", width="stretch"):
                                 self.db.cambiar_estado(l['id_externo'], 'archivada'); st.rerun()
                         else:
-                            if st.button("↩️ Restaurar a Analizadas", key=f"re_{l['id_externo']}", use_container_width=True):
+                            if st.button("↩️ Restaurar a Analizadas", key=f"re_{l['id_externo']}", width="stretch"):
                                 self.db.cambiar_estado(l['id_externo'], 'analizado'); st.rerun()
                         if l.get('descripcion_pro'):
-                            if st.button("🧠 Re-analizar con IA", key=f"ia_{l['id_externo']}", use_container_width=True):
+                            if st.button("🧠 Re-analizar con IA", key=f"ia_{l['id_externo']}", width="stretch"):
                                 self._reanalizar(l['id_externo'])
             st.divider()
 
@@ -296,11 +301,11 @@ class LicitAIWeb:
                     st.write(f"**Publicación:** {formatear_fecha(l.get('fecha_publicacion')) or 'No disponible'}")
                     st.write(f"**Cierre:** {formatear_fecha(l.get('fecha_cierre'), con_hora=True) or 'No disponible'}")
                     if l.get('link'):
-                        st.link_button("🚀 Abrir en Portal", l['link'], use_container_width=True)
-                    if st.button("⬅️ Quitar de Favoritas", key=f"back_{l['id_externo']}", use_container_width=True):
+                        st.link_button("🚀 Abrir en Portal", l['link'], width="stretch")
+                    if st.button("⬅️ Quitar de Favoritas", key=f"back_{l['id_externo']}", width="stretch"):
                         self.db.cambiar_estado(l['id_externo'], 'analizado'); st.rerun()
                     if l.get('descripcion_pro'):
-                        if st.button("🧠 Re-analizar con IA", key=f"iaf_{l['id_externo']}", use_container_width=True):
+                        if st.button("🧠 Re-analizar con IA", key=f"iaf_{l['id_externo']}", width="stretch"):
                             self._reanalizar(l['id_externo'])
 
                 with c2:
@@ -325,7 +330,7 @@ class LicitAIWeb:
                         valores = {clave: st.checkbox(etiqueta, value=bool(checklist.get(clave)), key=f"chk_{clave}_{l['id_externo']}")
                                    for clave, etiqueta in CHECKLIST_ITEMS.items()}
                         notas = st.text_area("Notas internas:", value=l.get('notas') or '', placeholder="Ej: Costos revisados...", key=f"txt_{l['id_externo']}")
-                        if st.form_submit_button("💾 Guardar notas", use_container_width=True):
+                        if st.form_submit_button("💾 Guardar notas", width="stretch"):
                             self.db.guardar_notas(l['id_externo'], notas, valores)
                             st.session_state['ultimo_mensaje'] = ("success", f"Notas de {l['id_externo']} guardadas.")
                             st.rerun()
@@ -356,7 +361,7 @@ class LicitAIWeb:
                         st.caption(f"Último error: {l['ultimo_error']}")
                 with c2:
                     if l['estado'] == 'error':
-                        if st.button("🔁 Reintentar", key=f"retry_{l['id_externo']}", use_container_width=True):
+                        if st.button("🔁 Reintentar", key=f"retry_{l['id_externo']}", width="stretch"):
                             self.db.reintentar(l['id_externo']); st.rerun()
 
     def run(self):

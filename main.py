@@ -13,24 +13,68 @@ Flujo de ejecución:
 3. Procesamiento: Toma de la BD la cola de pendientes/extraídas (incluidas las
    de ejecuciones anteriores) y procesa hasta MAX_PROCESAR intentos.
 4. Resumen: Devuelve un diccionario con lo que realmente ocurrió.
+
+Solo una ejecución puede estar activa a la vez por base de datos (archivo
+`<bd>.lock`), para no duplicar llamadas a Gemini desde dos pestañas o desde la
+UI y una tarea programada al mismo tiempo.
 """
 
 import argparse
-import sys
+import logging
+import os
 import time
+from contextlib import contextmanager
 from core import config
 from core.database_mgr import DatabaseManager
 from core.scraper import LicitacionScraper, DriverNoDisponible
 from core.ai_analyst import AIAnalyst, AnalisisFallido, CuotaAgotada
 from core.parsing import esta_cerrada, normalizar_keywords
 
-# Evitar UnicodeEncodeError al imprimir emojis cuando la salida se redirige a un
-# archivo con codificación cp1252 (p. ej. tareas programadas en Windows)
-for _stream in (sys.stdout, sys.stderr):
+log = logging.getLogger("licitai.main")
+
+
+class PipelineEnCurso(Exception):
+    """Ya hay otra ejecución del pipeline activa sobre la misma base de datos."""
+
+
+@contextmanager
+def bloqueo_pipeline(db_path, max_minutos=None):
+    """
+    Impedir ejecuciones simultáneas mediante un archivo de bloqueo exclusivo.
+
+    Un bloqueo más antiguo que `max_minutos` se considera huérfano (proceso
+    terminado de forma abrupta) y se reemplaza.
+
+    Raises:
+        PipelineEnCurso: Si otra ejecución mantiene el bloqueo.
+    """
+    max_minutos = config.BLOQUEO_MAX_MINUTOS if max_minutos is None else max_minutos
+    ruta = f"{db_path}.lock"
+    for _ in range(2):
+        try:
+            fd = os.open(ruta, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                edad_min = (time.time() - os.path.getmtime(ruta)) / 60
+            except FileNotFoundError:
+                continue  # Se liberó entre medio: reintentar
+            if edad_min < max_minutos:
+                raise PipelineEnCurso(f"Ya hay una sincronización en curso (iniciada hace {int(edad_min)} min).")
+            log.warning(f"⚠️ Bloqueo huérfano de hace {int(edad_min)} min; se reemplaza.")
+            os.remove(ruta)
+    else:
+        raise PipelineEnCurso("No se pudo obtener el bloqueo de la sincronización.")
+
     try:
-        _stream.reconfigure(errors="backslashreplace")
-    except (AttributeError, ValueError):
-        pass
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        yield
+    finally:
+        try:
+            os.remove(ruta)
+        except FileNotFoundError:
+            pass
 
 
 def _nuevo_resumen():
@@ -60,14 +104,27 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
     Returns:
         dict: Resumen de la ejecución (ver `_nuevo_resumen`).
     """
-    print("🚀 LicitAI: Iniciando ciclo de procesamiento...")
+    config.configurar_logging()
+    db = db or DatabaseManager()
+    try:
+        with bloqueo_pipeline(db.db_path):
+            return _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ahora)
+    except PipelineEnCurso as e:
+        log.warning(f"⛔ {e}")
+        resumen = _nuevo_resumen()
+        resumen["detenido_por"] = str(e)
+        return resumen
+
+
+def _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ahora):
+    """Cuerpo del pipeline (se ejecuta con el bloqueo tomado)."""
+    log.info("🚀 LicitAI: Iniciando ciclo de procesamiento...")
     resumen = _nuevo_resumen()
     max_procesar = config.MAX_PROCESAR if max_procesar is None else max_procesar
     max_intentos = config.MAX_INTENTOS if max_intentos is None else max_intentos
     pausa = config.PAUSA_ENTRE_LICITACIONES if pausa is None else pausa
 
     # Inicialización de dependencias e inyección de base de datos
-    db = db or DatabaseManager()
     scraper = scraper or LicitacionScraper(db)
 
     # -------------------------------------------------------
@@ -76,7 +133,7 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
     perfil = db.obtener_perfil() or {}
     if not normalizar_keywords(perfil.get('keywords_pos')):
         resumen["detenido_por"] = "No hay palabras clave positivas en el perfil de negocio."
-        print(f"⚠️ {resumen['detenido_por']}")
+        log.warning(f"⚠️ {resumen['detenido_por']}")
         return resumen
 
     if analyst is None:
@@ -84,7 +141,7 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
             analyst = AIAnalyst(db)
         except ValueError as e:
             resumen["detenido_por"] = str(e)
-            print(resumen["detenido_por"])
+            log.error(resumen["detenido_por"])
             return resumen
 
     # -------------------------------------------------------
@@ -107,7 +164,7 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
         resumen["registradas"] += int(insertada)
 
     if resumen["registradas"]:
-        print(f"📦 Se registraron {resumen['registradas']} licitaciones nuevas.")
+        log.info(f"📦 Se registraron {resumen['registradas']} licitaciones nuevas.")
 
     # -------------------------------------------------------
     # FASE 2: COLA DE PROCESAMIENTO (desde la BD)
@@ -122,7 +179,7 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
 
     # Control de cuotas: el límite cuenta intentos (éxitos y fallos)
     if len(lote) > max_procesar:
-        print(f"✋ {len(lote)} en cola; se procesarán {max_procesar} en esta ejecución.")
+        log.info(f"✋ {len(lote)} en cola; se procesarán {max_procesar} en esta ejecución.")
     lote = lote[:max_procesar]
 
     # -------------------------------------------------------
@@ -130,7 +187,7 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
     # -------------------------------------------------------
     for idx, licit in enumerate(lote):
         id_ext = licit['id_externo']
-        print(f"\n--- Procesando ({idx + 1}/{len(lote)}): {id_ext} ---")
+        log.info(f"\n--- Procesando ({idx + 1}/{len(lote)}): {id_ext} ---")
 
         # ---------------------------------
         # A. EXTRACCIÓN PROFUNDA (SELENIUM) — se omite si ya hay texto extraído
@@ -141,7 +198,7 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
             except DriverNoDisponible as e:
                 # Problema del entorno, no de la licitación: no consume intentos
                 resumen["detenido_por"] = str(e)
-                print(f"❌ {e}")
+                log.error(f"❌ {e}")
                 break
 
             resumen["intentadas"] += 1
@@ -149,7 +206,7 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
                 motivo = detalle.get('error') or "Extracción sin contenido"
                 estado = db.registrar_fallo(id_ext, f"Extracción: {motivo}", max_intentos)
                 resumen["fallidas"] += 1
-                print(f"❌ Falló la extracción técnica para {id_ext}: {motivo} (estado: {estado})")
+                log.warning(f"❌ Falló la extracción técnica para {id_ext}: {motivo} (estado: {estado})")
                 if pausa and idx < len(lote) - 1:
                     time.sleep(pausa)
                 continue
@@ -165,47 +222,48 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
             )
             # Persistencia del corpus textual para su posterior procesamiento por LLM
             db.actualizar_detalle_profundo(id_ext, detalle.get('link'), detalle['descripcion_pro'])
-            print("🔍 Extracción web completada.")
+            log.info("🔍 Extracción web completada.")
         else:
             resumen["intentadas"] += 1
 
         # ---------------------------------
         # B. ANÁLISIS ESTRATÉGICO (GEMINI)
         # ---------------------------------
-        print("🧠 Consultando a la IA...")
+        log.info("🧠 Consultando a la IA...")
         try:
             analis = analyst.analizar_licitacion(id_ext)
         except CuotaAgotada as e:
             # La licitación queda 'extraido' y se reintenta en la próxima ejecución
             resumen["detenido_por"] = str(e)
-            print(f"⛔ {e}")
+            log.error(f"⛔ {e}")
             break
         except AnalisisFallido as e:
             estado = db.registrar_fallo(id_ext, f"IA: {e}", max_intentos)
             resumen["fallidas"] += 1
-            print(f"⚠️ La IA no pudo procesar esta licitación: {e} (estado: {estado})")
+            log.warning(f"⚠️ La IA no pudo procesar esta licitación: {e} (estado: {estado})")
         else:
             resumen["analizadas"] += 1
             score = analis['score_ia']
-            print(f"🎯 ANÁLISIS COMPLETADO - SCORE: {score}/{config.SCORE_MAX}")
-            print(f"📝 VEREDICTO: {analis.get('veredicto')}")
-            for p in analis.get('puntos_criticos', []): print(f"   • {p}")
-            print("⚠️ RIESGOS:")
-            for r in analis.get('riesgos', []): print(f"   • {r}")
+            log.info(f"🎯 ANÁLISIS COMPLETADO - SCORE: {score}/{config.SCORE_MAX}")
+            log.info(f"📝 VEREDICTO: {analis.get('veredicto')}")
+            for p in analis.get('puntos_criticos', []): log.info(f"   • {p}")
+            log.info("⚠️ RIESGOS:")
+            for r in analis.get('riesgos', []): log.info(f"   • {r}")
             if score < config.UMBRAL_DESCARTE:
-                print(f"📂 MOTIVO DE ARCHIVO: {analis.get('motivo_archivo')}")
+                log.info(f"📂 MOTIVO DE ARCHIVO: {analis.get('motivo_archivo')}")
 
         # Gestión de estabilidad: Evitar bloqueos por parte del servidor destino (Mercado Público)
         if pausa and idx < len(lote) - 1:
-            print(f"💤 Esperando {pausa} segundos para estabilizar la siguiente carga...")
+            log.info(f"💤 Esperando {pausa} segundos para estabilizar la siguiente carga...")
             time.sleep(pausa)
 
     resumen["en_cola"] = db.contar_en_cola(max_intentos)
 
     nivel, mensaje = describir_resumen(resumen)
-    print("\n" + "=" * 50)
-    print(f"{'✅' if nivel == 'success' else 'ℹ️' if nivel == 'info' else '⚠️'} {mensaje}")
-    print("=" * 50)
+    log.info("\n" + "=" * 50)
+    log.log(logging.WARNING if nivel in ("warning", "error") else logging.INFO,
+            f"{'✅' if nivel == 'success' else 'ℹ️' if nivel == 'info' else '⚠️'} {mensaje}")
+    log.info("=" * 50)
     return resumen
 
 

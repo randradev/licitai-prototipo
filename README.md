@@ -19,7 +19,8 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 * El filtro mira **solo el título** del listado. El campo de regiones del perfil no se usa: el listado de la API no trae región. La región se muestra después de la extracción.
 * No lee las bases en PDF; analiza solo el texto visible de la ficha (truncado a `LICITAI_IA_MAX_CHARS`).
 * Depende de la estructura actual del portal (selectores de Selenium) y del SDK `google-generativeai`, que Google ya no mantiene (genera un `FutureWarning`).
-* La sincronización corre dentro de la petición de Streamlit y puede tardar varios minutos. Si interactúas con la página mientras corre, se interrumpe; lo procesado queda guardado y el resto se retoma en la siguiente ejecución.
+* La sincronización corre dentro de la petición de Streamlit y puede tardar varios minutos. Lo que hagas en la página mientras tanto se aplica al terminar. Solo puede haber una sincronización activa por base de datos: un archivo `<bd>.lock` evita que dos pestañas, o la UI y una tarea programada, procesen lo mismo a la vez.
+* Aunque Gemini se usa con `temperature=0`, el score de una misma ficha puede variar ligeramente entre ejecuciones.
 * Single-tenant (un único perfil). No se ha verificado su despliegue en Streamlit Cloud ni en otros servicios.
 
 ---
@@ -67,6 +68,7 @@ Copia `.env.example` como `.env` en la raíz y completa:
 | `GEMINI_API_KEY` | Sí | API key de Google AI Studio. |
 | `DATABASE_PATH` | No | Ruta de la BD (por defecto `data/mp_database.db`, relativa a la raíz). |
 | `GEMINI_MODEL` | No | Modelo de Gemini (por defecto `gemini-3-flash-preview`). |
+| `LICITAI_LOG_FILE` | No | Si se define (p. ej. `data/licitai.log`), además de la consola se escribe un log con fecha y nivel. Recomendado para tareas programadas. |
 | `LICITAI_MAX_PROCESAR`, `LICITAI_MAX_INTENTOS`, `LICITAI_HEADLESS`, … | No | Ver `.env.example`. |
 
 La base de datos se crea automáticamente al primer arranque.

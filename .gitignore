@@ -6,8 +6,12 @@ __pycache__/
 venv/
 .env
 
-# Bases de datos 
+# Bases de datos
 *.db
+*.db.lock
+
+# Logs
+*.log
 
 # Streamlit y entorno
 .streamlit/

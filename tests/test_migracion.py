@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import sqlite3
+from pathlib import Path
 
 from core.migrar_datos import calcular_cambios, migrar
 from tests.conftest import FICHA_EJEMPLO
@@ -31,10 +32,10 @@ def test_calcular_cambios_usa_la_ficha():
 def test_simulacion_no_modifica_nada(tmp_path):
     path = str(tmp_path / "vieja.db")
     _bd_antigua(path)
-    antes = open(path, "rb").read()
+    antes = Path(path).read_bytes()
     cambios, respaldo = migrar(path, aplicar=False)
     assert respaldo is None and set(cambios) == {"CON-FICHA", "SIN-FICHA"}
-    assert open(path, "rb").read() == antes
+    assert Path(path).read_bytes() == antes
 
 
 def test_aplicar_crea_respaldo_y_corrige_sin_borrar(tmp_path):
