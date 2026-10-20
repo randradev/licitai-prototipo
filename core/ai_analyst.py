@@ -25,6 +25,12 @@ except ImportError:  # pragma: no cover - dependencia transitiva de google-gener
         pass
 
 
+# Versión del prompt y de la configuración de generación. Se guarda con cada
+# análisis: cámbiala siempre que modifiques `construir_prompt` o los parámetros
+# del modelo, para poder comparar análisis hechos con versiones distintas.
+PROMPT_VERSION = "2026-10-20.1"
+
+
 class AnalisisFallido(Exception):
     """Fallo recuperable del análisis (respuesta inválida, red, contenido bloqueado...)."""
 
@@ -51,6 +57,7 @@ class AIAnalyst:
             modelo (optional): Modelo ya construido (se usa en pruebas).
         """
         self.db = db_manager
+        self.nombre_modelo = config.GEMINI_MODEL
 
         if modelo is not None:
             self.model = modelo
@@ -171,7 +178,9 @@ class AIAnalyst:
             id_externo,
             data_ia['score_ia'],
             data_ia,
-            data_ia.get('motivo_archivo')
+            data_ia.get('motivo_archivo'),
+            modelo=self.nombre_modelo,
+            prompt_version=PROMPT_VERSION,
         )
 
         # Completar huecos (nunca sobrescribe datos de la fuente)

@@ -24,6 +24,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from core import config
 from core.database_mgr import DatabaseManager
 from core.scraper import LicitacionScraper, DriverNoDisponible
@@ -80,6 +81,8 @@ def bloqueo_pipeline(db_path, max_minutos=None):
 def _nuevo_resumen():
     """Estructura del resumen devuelto por el pipeline."""
     return {
+        "fecha_consulta": None,     # Fecha del listado consultado (ISO)
+        "total_listado": 0,         # Licitaciones en el listado de la API
         "descubiertas": 0,          # Nuevas que pasaron el filtro en el listado del día
         "registradas": 0,           # Insertadas en la BD en esta ejecución
         "descartadas_cerradas": 0,  # Del listado, ya cerradas
@@ -108,7 +111,11 @@ def ejecutar_pipeline(db=None, scraper=None, analyst=None, max_procesar=None,
     db = db or DatabaseManager()
     try:
         with bloqueo_pipeline(db.db_path):
-            return _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ahora)
+            inicio = datetime.now()
+            resumen = _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ahora)
+            # Registro para el embudo de filtrado y la observabilidad del pipeline
+            db.registrar_ejecucion(resumen, inicio, datetime.now(), resumen.get("fecha_consulta"))
+            return resumen
     except PipelineEnCurso as e:
         log.warning(f"⛔ {e}")
         resumen = _nuevo_resumen()
@@ -149,6 +156,8 @@ def _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ah
     # -------------------------------------------------------
     # Consulta masiva al endpoint oficial de Mercado Público
     licitaciones_dia = scraper.ejecutar_pipeline_descubrimiento(fecha)
+    resumen["fecha_consulta"] = scraper.fecha_consulta
+    resumen["total_listado"] = scraper.total_listado
     resumen["error_descubrimiento"] = scraper.error_descubrimiento
     resumen["descartadas_cerradas"] = scraper.descartadas_cerradas
     resumen["descubiertas"] = len(licitaciones_dia)

@@ -1,0 +1,7 @@
+# Configuración de Streamlit para LicitAI
+[client]
+# Oculta el botón "Deploy" y el menú de desarrollador: la app es de uso local
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

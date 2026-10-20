@@ -137,6 +137,22 @@ def esta_cerrada(fecha_cierre, ahora=None):
     return cierre < (ahora or datetime.now())
 
 
+def dias_para_cierre(fecha_cierre, ahora=None):
+    """
+    Días calendario que faltan para el cierre (0 = cierra hoy, negativo = ya cerró).
+
+    Returns:
+        int | None: None si la fecha de cierre es desconocida.
+    """
+    cierre = parsear_fecha_hora(fecha_cierre)
+    if not cierre:
+        return None
+    ahora = ahora or datetime.now()
+    if cierre < ahora:
+        return min(-1, (cierre.date() - ahora.date()).days)
+    return (cierre.date() - ahora.date()).days
+
+
 # ===================================================================
 # METADATOS DESDE LA FICHA TÉCNICA
 # ===================================================================
