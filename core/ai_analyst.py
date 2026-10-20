@@ -16,13 +16,19 @@ import os
 import google.generativeai as genai
 
 from core import config
-from core.parsing import parsear_respuesta_ia, validar_analisis
+from core.parsing import parsear_respuesta_ia, validar_analisis, version_perfil
 
 try:
     from google.api_core.exceptions import ResourceExhausted
 except ImportError:  # pragma: no cover - dependencia transitiva de google-generativeai
     class ResourceExhausted(Exception):
         pass
+
+
+# Versión del prompt y de la configuración de generación. Se guarda con cada
+# análisis: cámbiala siempre que modifiques `construir_prompt` o los parámetros
+# del modelo, para poder comparar análisis hechos con versiones distintas.
+PROMPT_VERSION = "2026-10-20.1"
 
 
 class AnalisisFallido(Exception):
@@ -51,6 +57,7 @@ class AIAnalyst:
             modelo (optional): Modelo ya construido (se usa en pruebas).
         """
         self.db = db_manager
+        self.nombre_modelo = config.GEMINI_MODEL
 
         if modelo is not None:
             self.model = modelo
@@ -171,7 +178,10 @@ class AIAnalyst:
             id_externo,
             data_ia['score_ia'],
             data_ia,
-            data_ia.get('motivo_archivo')
+            data_ia.get('motivo_archivo'),
+            modelo=self.nombre_modelo,
+            prompt_version=PROMPT_VERSION,
+            perfil_version=version_perfil(perfil),
         )
 
         # Completar huecos (nunca sobrescribe datos de la fuente)

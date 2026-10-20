@@ -13,8 +13,8 @@ venv/
 # Logs
 *.log
 
-# Streamlit y entorno
-.streamlit/
+# Streamlit y entorno (config.toml sí se versiona; los secretos no)
+.streamlit/secrets.toml
 .vscode/
 .DS_Store
 

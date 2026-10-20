@@ -12,7 +12,11 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 * **Cola recuperable:** registra todas las licitaciones relevantes y procesa hasta `LICITAI_MAX_PROCESAR` por ejecución. Las restantes y las que fallan se retoman en las siguientes ejecuciones (hasta `LICITAI_MAX_INTENTOS` intentos). Después pasan a *error*, visibles en la pestaña **Pendientes / Errores**, con un botón **Reintentar**.
 * **Datos de la fuente:** el título, el organismo, la fecha de publicación, la región y el **número de reclamos por pago fuera de plazo** se toman literalmente del texto de la ficha. Si un dato no aparece se muestra "No disponible"; nunca se inventa.
 * **Análisis IA:** Gemini devuelve un JSON con un score del 1 al 10, un veredicto, puntos críticos y riesgos. La respuesta se valida antes de guardarse. Si un re-análisis falla, se conserva el análisis anterior.
-* **Gestión:** favoritas, archivadas, re-análisis manual con IA y notas y checklist por favorita guardados en SQLite.
+* **Gestión:** favoritas, archivadas, re-análisis manual con IA y notas y checklist por favorita guardados en SQLite. Búsqueda y filtros por score, región y cierre, con el tiempo restante para el cierre siempre visible.
+* **Trazabilidad:** cada análisis guarda el modelo, la versión del prompt (`PROMPT_VERSION` en `core/ai_analyst.py`) y su fecha, para comparar análisis hechos con configuraciones distintas.
+* **Tu evaluación:** en cada análisis puedes indicar si el score fue acertado y si postularías. Esas respuestas forman un set de datos con criterio humano para medir la calidad del score.
+* **📊 Panorama:** embudo de filtrado (listado → relevantes → analizadas → favoritas, a partir del registro de cada sincronización), calendario de cierres, oportunidad vs. reclamos de pago, distribución de scores y calibración del score contra tus evaluaciones (se dibuja desde 10 evaluaciones). Cada gráfico muestra su tamaño de muestra y tiene una vista de tabla.
+* **Exportación:** JSON (con la ficha completa opcional) o CSV, separando los datos de la fuente, el análisis de IA y tu evaluación. Las notas internas no se exportan.
 
 ## ⚠️ Qué no hace / limitaciones
 * Solo consulta **una fecha por ejecución**: si no se ejecuta un día, ese listado no se revisa (puedes usar `python main.py --fecha DDMMAAAA`).
@@ -38,7 +42,14 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 | `core/parsing.py` | Funciones puras: keywords, fechas, metadatos de la ficha y validación del JSON. |
 | `core/config.py` | Variables de entorno y constantes (umbrales del score, límites). |
 | `core/migrar_datos.py` | Corrección única de los datos guardados por versiones anteriores. |
-| `web/app.py` | Dashboard Streamlit. |
+| `core/exportar.py` | Exportación a JSON y CSV independiente del esquema SQLite. |
+| `web/app.py` | Punto de entrada del dashboard: tema, estilos y navegación superior. |
+| `web/paginas/*.py` | Una sección por archivo (Oportunidades, Favoritas, Archivo, Cola, Panorama, Perfil). |
+| `web/vistas.py` | Contenido de cada sección: tarjetas, filtros, formularios y helpers de presentación. |
+| `web/estilos.py` | CSS de la estética «premium oscuro»: tarjetas, KPIs, anillo de score, chips y retoques de los controles. |
+| `web/panorama.py` | Visualizaciones: preparación de datos y gráficos Altair (paleta validada sobre el fondo oscuro). |
+| `web/static/fonts/` | Tipografía Inter incluida en el proyecto (licencia OFL): la interfaz no depende de internet. |
+| `.streamlit/config.toml` | Tema oscuro de Streamlit: fuente, colores, bordes y radios. |
 
 **Estados de una licitación:** `pendiente` (registrada) → `extraido` (texto de la ficha guardado) → `analizado` → `favorita` / `archivada`. `error`: agotó los reintentos o cerró antes de procesarse.
 

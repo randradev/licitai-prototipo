@@ -1,0 +1,34 @@
+# Configuración de Streamlit para LicitAI
+[client]
+# Oculta el botón "Deploy" y el menú de desarrollador: la app es de uso local
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# Sirve web/static/ (tipografía incluida en el proyecto: sin depender de internet)
+enableStaticServing = true
+
+# --- Tema: "premium oscuro" (único tema) ---
+# Tokens alineados con web/estilos.py y la paleta de gráficos de web/panorama.py
+[[theme.fontFaces]]
+family = "Inter"
+url = "app/static/fonts/Inter-latin.woff2"
+weight = "400 700"
+style = "normal"
+
+[theme]
+base = "dark"
+font = "Inter, sans-serif"
+baseFontSize = 15
+baseRadius = "0.625rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+headingFontWeights = [650, 600, 600, 600, 600, 600]
+primaryColor = "#5e6ad2"
+backgroundColor = "#08090a"
+secondaryBackgroundColor = "#141517"
+textColor = "#f7f8f8"
+borderColor = "#23252a"
+linkColor = "#8b92ee"

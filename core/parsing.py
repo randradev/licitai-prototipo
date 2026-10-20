@@ -13,6 +13,7 @@ Al no tener efectos secundarios, se prueban de forma determinista.
 
 import re
 import json
+import hashlib
 import unicodedata
 from datetime import datetime
 
@@ -54,6 +55,26 @@ def normalizar_keywords(cadena):
         return []
     terminos = (normalizar_texto(t) for t in re.split(r"[,;\n]", cadena))
     return [t for t in terminos if t]
+
+
+def version_perfil(perfil):
+    """
+    Huella corta del perfil tal como lo usa la IA (keywords y bio).
+
+    Cambios que no alteran el significado (mayúsculas, tildes o espacios en las
+    keywords, espacios al borde de la bio) no cambian la versión.
+
+    Returns:
+        str | None: 8 caracteres hexadecimales, o None si no hay perfil.
+    """
+    if not perfil:
+        return None
+    contenido = json.dumps({
+        "pos": sorted(normalizar_keywords(perfil.get("keywords_pos"))),
+        "neg": sorted(normalizar_keywords(perfil.get("keywords_neg"))),
+        "bio": (perfil.get("bio_estrategica") or "").strip(),
+    }, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(contenido.encode("utf-8")).hexdigest()[:8]
 
 
 def coincide_keywords(titulo, positivas, negativas=()):
@@ -135,6 +156,22 @@ def esta_cerrada(fecha_cierre, ahora=None):
     if not cierre:
         return False
     return cierre < (ahora or datetime.now())
+
+
+def dias_para_cierre(fecha_cierre, ahora=None):
+    """
+    Días calendario que faltan para el cierre (0 = cierra hoy, negativo = ya cerró).
+
+    Returns:
+        int | None: None si la fecha de cierre es desconocida.
+    """
+    cierre = parsear_fecha_hora(fecha_cierre)
+    if not cierre:
+        return None
+    ahora = ahora or datetime.now()
+    if cierre < ahora:
+        return min(-1, (cierre.date() - ahora.date()).days)
+    return (cierre.date() - ahora.date()).days
 
 
 # ===================================================================

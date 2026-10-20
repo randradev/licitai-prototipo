@@ -81,6 +81,8 @@ class LicitacionScraper:
         # Diagnóstico de la última ejecución, consumido por el resumen del pipeline
         self.error_descubrimiento = None
         self.descartadas_cerradas = 0
+        self.total_listado = 0
+        self.fecha_consulta = None   # ISO YYYY-MM-DD del listado consultado
 
     # -------------------------------------------------------------------
     # PARTE 1: DESCUBRIMIENTO GENERAL (API REST)
@@ -120,6 +122,10 @@ class LicitacionScraper:
 
         # Formatear la fecha según el estándar requerido por la API (DDMMAAAA)
         fecha_consulta = fecha or datetime.now().strftime("%d%m%Y")
+        try:
+            self.fecha_consulta = datetime.strptime(fecha_consulta, "%d%m%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            self.fecha_consulta = None
         parametros = {
             'fecha': fecha_consulta,
             'ticket': self.api_ticket
@@ -199,6 +205,7 @@ class LicitacionScraper:
             list: Candidatos nuevos para registrar.
         """
         listado_total = self.descubrir_licitaciones_del_dia(fecha)
+        self.total_listado = len(listado_total)
 
         if not listado_total:
             log.info("👀 No se encontraron licitaciones en el listado general.")

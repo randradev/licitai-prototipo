@@ -24,6 +24,7 @@ import sqlite3
 import json
 import os
 from contextlib import contextmanager
+from datetime import datetime
 
 from core import config
 from core.parsing import es_valor_util
@@ -39,7 +40,25 @@ COLUMNAS_NUEVAS = {
     "region": "TEXT",                  # Región extraída de la ficha
     "notas": "TEXT",                   # Notas internas del usuario
     "checklist_json": "TEXT",          # Checklist de gestión del usuario (JSON)
+    # Trazabilidad del análisis vigente
+    "analisis_modelo": "TEXT",         # Modelo de IA que generó el análisis
+    "analisis_prompt_version": "TEXT", # Versión del prompt (core/ai_analyst.py)
+    "analisis_fecha": "TEXT",          # Momento del análisis (ISO, hora local)
+    "analisis_perfil_version": "TEXT", # Versión del perfil usada (core.parsing.version_perfil)
+    # Evaluación humana del análisis (dataset para medir la calidad del score)
+    "eval_score": "TEXT",              # 'acertado' | 'muy_alto' | 'muy_bajo'
+    "eval_postularia": "TEXT",         # 'si' | 'tal_vez' | 'no'
+    "eval_comentario": "TEXT",
+    "eval_fecha": "TEXT",
 }
+
+EVAL_SCORE_OPCIONES = ("acertado", "muy_alto", "muy_bajo")
+EVAL_POSTULARIA_OPCIONES = ("si", "tal_vez", "no")
+
+
+def _ahora_iso():
+    """Momento actual en ISO (hora local, sin microsegundos)."""
+    return datetime.now().isoformat(timespec="seconds")
 
 
 class DatabaseManager:
@@ -121,6 +140,23 @@ class DatabaseManager:
                     estado TEXT DEFAULT 'pendiente', -- Ver ciclo de vida en el encabezado del módulo
                     motivo_archivo TEXT,         -- Feedback de la IA en caso de descarte
                     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- UTC
+                )
+            """)
+            # ENTIDAD 3: EJECUCIÓN DEL PIPELINE
+            # Registro de cada sincronización (embudo de filtrado y observabilidad).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ejecuciones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    inicio TEXT,                 -- ISO, hora local
+                    fin TEXT,
+                    fecha_consulta TEXT,         -- Fecha del listado consultado (ISO)
+                    total_listado INTEGER,       -- Licitaciones en el listado de la API
+                    relevantes INTEGER,          -- Nuevas que pasaron el filtro
+                    registradas INTEGER,
+                    analizadas INTEGER,
+                    fallidas INTEGER,
+                    detenido_por TEXT,
+                    error_descubrimiento TEXT
                 )
             """)
             self._migrar_esquema(conn)
@@ -321,29 +357,98 @@ class DatabaseManager:
             conn.execute(query, (id_externo,))
             conn.commit()
 
-    def guardar_analisis_ia(self, id_externo, score, analisis_json, motivo=None):
+    def guardar_analisis_ia(self, id_externo, score, analisis_json, motivo=None, modelo=None, prompt_version=None,
+                            perfil_version=None):
         """
         Persistir los resultados generados por el modelo de IA.
 
         Las licitaciones favoritas o archivadas conservan su estado al
-        re-analizarse; el resto pasa a 'analizado'.
+        re-analizarse; el resto pasa a 'analizado'. Se registra con qué modelo,
+        versión de prompt y en qué momento se generó el análisis.
+
+        Una evaluación humana previa se conserva: describe el análisis
+        anterior, por lo que la UI la marca como desactualizada comparando
+        `eval_fecha` con `analisis_fecha`.
 
         Args:
             id_externo (str): ID de la licitación.
             score (int): Puntaje de idoneidad (1-10).
             analisis_json (dict): Estructura de riesgos y oportunidades.
             motivo (str, optional): Justificación de archivo en scores bajos.
+            modelo (str, optional): Modelo de IA utilizado.
+            prompt_version (str, optional): Versión del prompt utilizado.
+            perfil_version (str, optional): Versión del perfil de negocio utilizado.
         """
         query = """
             UPDATE licitaciones
             SET score_ia = ?, analisis_ia_json = ?, motivo_archivo = ?,
+                analisis_modelo = ?, analisis_prompt_version = ?, analisis_fecha = ?, analisis_perfil_version = ?,
                 estado = CASE WHEN estado IN ('favorita', 'archivada') THEN estado ELSE 'analizado' END,
                 intentos = 0, ultimo_error = NULL
             WHERE id_externo = ?
         """
         with self._get_connection() as conn:
-            conn.execute(query, (score, json.dumps(analisis_json, ensure_ascii=False), motivo, id_externo))
+            conn.execute(query, (score, json.dumps(analisis_json, ensure_ascii=False), motivo,
+                                 modelo, prompt_version, _ahora_iso(), perfil_version, id_externo))
             conn.commit()
+
+    def guardar_evaluacion(self, id_externo, eval_score, postularia, comentario=None):
+        """
+        Guardar la evaluación humana del análisis vigente.
+
+        Args:
+            eval_score (str): 'acertado', 'muy_alto' o 'muy_bajo'.
+            postularia (str): 'si', 'tal_vez' o 'no'.
+            comentario (str, optional): Observación libre.
+
+        Raises:
+            ValueError: Si alguna opción no es válida.
+        """
+        if eval_score not in EVAL_SCORE_OPCIONES:
+            raise ValueError(f"eval_score inválido: {eval_score!r}")
+        if postularia not in EVAL_POSTULARIA_OPCIONES:
+            raise ValueError(f"postularia inválido: {postularia!r}")
+        query = """
+            UPDATE licitaciones
+            SET eval_score = ?, eval_postularia = ?, eval_comentario = ?, eval_fecha = ?
+            WHERE id_externo = ?
+        """
+        with self._get_connection() as conn:
+            conn.execute(query, (eval_score, postularia, (comentario or "").strip() or None, _ahora_iso(), id_externo))
+            conn.commit()
+
+    # ===================================================================
+    # REGISTRO DE EJECUCIONES
+    # ===================================================================
+
+    def registrar_ejecucion(self, resumen, inicio, fin, fecha_consulta=None):
+        """
+        Guardar el resultado de una ejecución del pipeline.
+
+        Args:
+            resumen (dict): Resumen devuelto por el pipeline.
+            inicio, fin (datetime): Momentos de inicio y término.
+            fecha_consulta (str, optional): Fecha del listado consultado (ISO).
+        """
+        query = """
+            INSERT INTO ejecuciones (inicio, fin, fecha_consulta, total_listado, relevantes, registradas,
+                                     analizadas, fallidas, detenido_por, error_descubrimiento)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self._get_connection() as conn:
+            conn.execute(query, (
+                inicio.isoformat(timespec="seconds"), fin.isoformat(timespec="seconds"), fecha_consulta,
+                resumen.get("total_listado", 0), resumen.get("descubiertas", 0), resumen.get("registradas", 0),
+                resumen.get("analizadas", 0), resumen.get("fallidas", 0),
+                resumen.get("detenido_por"), resumen.get("error_descubrimiento"),
+            ))
+            conn.commit()
+
+    def obtener_ejecuciones(self):
+        """Recuperar todas las ejecuciones registradas, de la más reciente a la más antigua."""
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM ejecuciones ORDER BY inicio DESC, id DESC").fetchall()
+            return [dict(row) for row in rows]
 
     def cambiar_estado(self, id_externo, nuevo_estado):
         """
