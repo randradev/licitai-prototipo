@@ -6,28 +6,29 @@ toolbarMode = "minimal"
 [browser]
 gatherUsageStats = false
 
-# --- Tema (común a claro y oscuro) ---
-# Colores de la paleta de referencia usada en los gráficos (web/panorama.py)
+[server]
+# Sirve web/static/ (tipografía incluida en el proyecto: sin depender de internet)
+enableStaticServing = true
+
+# --- Tema: "premium oscuro" (único tema) ---
+# Tokens alineados con web/estilos.py y la paleta de gráficos de web/panorama.py
+[[theme.fontFaces]]
+family = "Inter"
+url = "app/static/fonts/Inter-latin.woff2"
+weight = "400 700"
+style = "normal"
+
 [theme]
-font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+base = "dark"
+font = "Inter, sans-serif"
 baseFontSize = 15
-baseRadius = "0.6rem"
+baseRadius = "0.625rem"
 buttonRadius = "0.5rem"
 showWidgetBorder = true
-headingFontWeights = [700, 650, 600, 600, 600, 600]
-
-[theme.light]
-primaryColor = "#2a78d6"
-backgroundColor = "#f6f6f3"
-secondaryBackgroundColor = "#ecebe6"
-textColor = "#1a1a19"
-borderColor = "#e1e0d9"
-linkColor = "#256abf"
-
-[theme.dark]
-primaryColor = "#3987e5"
-backgroundColor = "#0f0f0e"
-secondaryBackgroundColor = "#232321"
-textColor = "#f0efec"
-borderColor = "#2c2c2a"
-linkColor = "#6da7ec"
+headingFontWeights = [650, 600, 600, 600, 600, 600]
+primaryColor = "#5e6ad2"
+backgroundColor = "#08090a"
+secondaryBackgroundColor = "#141517"
+textColor = "#f7f8f8"
+borderColor = "#23252a"
+linkColor = "#8b92ee"

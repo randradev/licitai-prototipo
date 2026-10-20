@@ -25,14 +25,17 @@ MIN_EVALUACIONES_CALIBRACION = 10
 TRAMOS_SCORE = (("1–4", 1, 4), ("5–6", 5, 6), ("7–8", 7, 8), ("9–10", 9, 10))
 PERIODOS = {"Últimos 7 días": 7, "Últimos 30 días": 30, "Últimos 90 días": 90, "Todo": None}
 
-# Tokens por tema (paleta de referencia; rampas validadas con --ordinal en ambos modos)
+# Tokens de los gráficos, alineados con web/estilos.py (tema "premium oscuro").
+# Validados con el script de la guía de visualización contra la superficie #0f1012:
+# serie índigo con contraste >= 3:1 y rampa índigo de un solo tono (--ordinal).
 TEMAS = {
+    "dark": {"serie": "#7c82f2", "rampa": ["#3f44a8", "#5e6ad2", "#8b92ee", "#bcc0fa"],
+             "superficie": "#0f1012", "texto": "#f7f8f8", "texto2": "#b4b8bf", "muted": "#7d828b",
+             "grid": "rgba(255,255,255,0.06)", "eje": "rgba(255,255,255,0.12)"},
+    # Paleta clara de referencia (sin uso en la UI actual; se conserva para un tema claro futuro)
     "light": {"serie": "#2a78d6", "rampa": ["#86b6ef", "#5598e7", "#256abf", "#104281"],
               "superficie": "#fcfcfb", "texto": "#0b0b0b", "texto2": "#52514e", "muted": "#898781",
               "grid": "#e1e0d9", "eje": "#c3c2b7"},
-    "dark": {"serie": "#3987e5", "rampa": ["#1c5cab", "#3987e5", "#6da7ec", "#9ec5f4"],
-             "superficie": "#1a1a19", "texto": "#f0efec", "texto2": "#c3c2b7", "muted": "#898781",
-             "grid": "#2c2c2a", "eje": "#383835"},
 }
 
 
@@ -85,9 +88,9 @@ def datos_embudo(licitaciones, ejecuciones, dias=None, ahora=None):
         base = [l for l in base if _fecha_registro(l) >= desde]
     analizadas = [l for l in base if l.get("analisis_ia_json")]
     return [
-        {"etapa": "Listado del portal", "orden": 1, "cantidad": sum(por_fecha.values())},
-        {"etapa": "Relevantes", "orden": 2, "cantidad": len(base)},
-        {"etapa": "Analizadas por IA", "orden": 3, "cantidad": len(analizadas)},
+        {"etapa": "Publicadas en el portal", "orden": 1, "cantidad": sum(por_fecha.values())},
+        {"etapa": "Coinciden con tu perfil", "orden": 2, "cantidad": len(base)},
+        {"etapa": "Analizadas por la IA", "orden": 3, "cantidad": len(analizadas)},
         {"etapa": "Favoritas", "orden": 4, "cantidad": sum(1 for l in base if l.get("estado") == "favorita")},
     ]
 
@@ -173,7 +176,7 @@ def grafico_embudo(filas, t):
         y=alt.Y("etapa:N", sort=alt.SortField("orden"), title=None, axis=alt.Axis(labelColor=t["texto2"], labelLimit=200)),
         x=alt.X("cantidad:Q", title=None, axis=alt.Axis(grid=False, labels=False, ticks=False, domain=False)),
         tooltip=[alt.Tooltip("etapa:N", title="Etapa"), alt.Tooltip("cantidad:Q", title="Cantidad", format=",d"),
-                 alt.Tooltip("pct:N", title="% del listado")],
+                 alt.Tooltip("pct:N", title="% de lo publicado")],
     )
     barras = base.mark_bar(color=t["serie"], cornerRadiusEnd=4, height=18)
     textos = base.mark_text(align="left", dx=6, color=t["texto2"], fontSize=12).encode(text="etiqueta:N")
@@ -193,10 +196,10 @@ def grafico_calendario(filas, t, ahora=None):
         y=alt.Y("titulo:N", sort=orden, title=None, axis=alt.Axis(labelLimit=320, labelColor=t["texto2"])),
         x=alt.X("inicio_visible:T", title=None, axis=alt.Axis(format="%d %b"), scale=alt.Scale(domain=dominio)),
         x2="cierre:T",
-        color=alt.Color("score:Q", title="Score IA", scale=alt.Scale(domain=[1, 10], range=t["rampa"]),
+        color=alt.Color("score:Q", title="Score", scale=alt.Scale(domain=[1, 10], range=t["rampa"]),
                         legend=alt.Legend(orient="top", gradientLength=160)),
         tooltip=[alt.Tooltip("titulo:N", title="Licitación"), alt.Tooltip("organismo:N", title="Organismo"),
-                 alt.Tooltip("score:Q", title="Score IA"), alt.Tooltip("inicio:T", title="Publicación", format="%d/%m/%Y"),
+                 alt.Tooltip("score:Q", title="Score"), alt.Tooltip("inicio:T", title="Publicación", format="%d/%m/%Y"),
                  alt.Tooltip("cierre:T", title="Cierre", format="%d/%m/%Y %H:%M"),
                  alt.Tooltip("dias:Q", title="Días para el cierre")],
     )
@@ -209,10 +212,10 @@ def grafico_calendario(filas, t, ahora=None):
 def grafico_riesgo(filas, t):
     df = pd.DataFrame(filas)
     tooltip = [alt.Tooltip("titulo:N", title="Licitación"), alt.Tooltip("organismo:N", title="Organismo"),
-               alt.Tooltip("score:Q", title="Score IA"), alt.Tooltip("reclamos:Q", title="Reclamos de pago (12 meses)")]
+               alt.Tooltip("score:Q", title="Score"), alt.Tooltip("reclamos:Q", title="Reclamos por pagos atrasados")]
     enc = dict(
-        x=alt.X("reclamos:Q", title="Reclamos por pago fuera de plazo (12 meses, fuente: ficha)", scale=alt.Scale(zero=True)),
-        y=alt.Y("score:Q", title="Score IA", scale=alt.Scale(domain=[0, 10]), axis=alt.Axis(values=list(range(0, 11, 2)))),
+        x=alt.X("reclamos:Q", title="Reclamos por pagos atrasados (últimos 12 meses)", scale=alt.Scale(zero=True)),
+        y=alt.Y("score:Q", title="Score", scale=alt.Scale(domain=[0, 10]), axis=alt.Axis(values=list(range(0, 11, 2)))),
     )
     puntos = alt.Chart(df).mark_circle(size=90, color=t["serie"], opacity=0.85, stroke=t["superficie"], strokeWidth=2).encode(**enc)
     # Área de acierto mayor que la marca (≥24px) para el tooltip
@@ -223,7 +226,7 @@ def grafico_riesgo(filas, t):
 def grafico_histograma(filas, t):
     df = pd.DataFrame(filas)
     return _config(alt.Chart(df).mark_bar(color=t["serie"], cornerRadiusTopLeft=4, cornerRadiusTopRight=4, width=22).encode(
-        x=alt.X("score:O", title="Score IA", axis=alt.Axis(labelAngle=0)),
+        x=alt.X("score:O", title="Score", axis=alt.Axis(labelAngle=0)),
         y=alt.Y("cantidad:Q", title="Licitaciones", axis=alt.Axis(tickMinStep=1, format="d")),
         tooltip=[alt.Tooltip("score:O", title="Score"), alt.Tooltip("cantidad:Q", title="Licitaciones")],
     ).properties(height=220), t)
@@ -231,14 +234,14 @@ def grafico_histograma(filas, t):
 
 def grafico_calibracion(filas, t):
     df = pd.DataFrame(filas)
-    df["etiqueta"] = df.apply(lambda r: f"{int(r['pct_si'])} %  (n={int(r['n'])})" if r["n"] else "sin datos", axis=1)
+    df["etiqueta"] = df.apply(lambda r: f"{int(r['pct_si'])} % · {int(r['n'])} eval." if r["n"] else "sin datos", axis=1)
     df["y_etiqueta"] = df["pct_si"].fillna(0)
     tramos = [t_[0] for t_ in TRAMOS_SCORE]
     base = alt.Chart(df).encode(
         # Todos los tramos en el eje, aunque alguno no tenga evaluaciones
-        x=alt.X("tramo:O", title="Tramo de score IA", sort=tramos, scale=alt.Scale(domain=tramos), axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("pct_si:Q", title="% que postularías", scale=alt.Scale(domain=[0, 100])),
-        tooltip=[alt.Tooltip("tramo:O", title="Tramo"), alt.Tooltip("n:Q", title="Evaluadas"),
+        x=alt.X("tramo:O", title="Score de la IA", sort=tramos, scale=alt.Scale(domain=tramos), axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("pct_si:Q", title="% en que postularías", scale=alt.Scale(domain=[0, 100])),
+        tooltip=[alt.Tooltip("tramo:O", title="Score"), alt.Tooltip("n:Q", title="Evaluadas"),
                  alt.Tooltip("si:Q", title="Sí"), alt.Tooltip("tal_vez:Q", title="Tal vez"), alt.Tooltip("no:Q", title="No")],
     )
     barras = base.mark_bar(color=t["serie"], cornerRadiusTopLeft=4, cornerRadiusTopRight=4, width=36)
@@ -251,19 +254,27 @@ def grafico_calibracion(filas, t):
 # ===================================================================
 
 def _tema():
-    try:
-        return TEMAS["dark"] if st.context.theme.type == "dark" else TEMAS["light"]
-    except Exception:
-        return TEMAS["light"]
+    """Tokens de los gráficos (la UI usa un único tema oscuro)."""
+    return TEMAS["dark"]
 
 
 def _tabla(df, columnas):
-    with st.expander("Ver tabla"):
+    with st.expander("Ver datos"):
         st.dataframe(pd.DataFrame(df).rename(columns=columnas)[list(columnas.values())], hide_index=True, width="stretch")
 
 
-def _titulo(texto):
+def _titulo(texto, subtitulo=None):
     st.markdown(f"##### {texto}")
+    if subtitulo:
+        st.caption(subtitulo)
+
+
+def _vacio(texto):
+    st.html(f'<div class="l-nota" style="padding:.6rem 0">{texto}</div>')
+
+
+def _plural(n, singular, plural):
+    return f"{n} {singular if n == 1 else plural}"
 
 
 def render(db, ahora=None):
@@ -273,75 +284,79 @@ def render(db, ahora=None):
     ejecuciones = db.obtener_ejecuciones()
 
     # Filtro único que acota todo lo que mira hacia atrás (el calendario mira hacia adelante)
-    c_filtro, _ = st.columns([1, 3])
-    etiqueta_periodo = c_filtro.selectbox("Periodo", list(PERIODOS), index=1, key="panorama_periodo")
+    # Radio con aspecto de "píldoras" (CSS en web/estilos.py: key "pill_*")
+    etiqueta_periodo = st.radio("Periodo", list(PERIODOS), index=1, key="pill_periodo", horizontal=True,
+                                label_visibility="collapsed") or "Últimos 30 días"
     dias = PERIODOS[etiqueta_periodo]
     periodo = en_periodo(todas, dias, ahora)
 
     # --- Embudo ---
     with st.container(border=True, key="lcard_pan_1"):
-        _titulo("Embudo de filtrado")
+        _titulo("De lo publicado a tus oportunidades",
+                "Cuántas licitaciones pasan cada etapa: publicadas, coinciden con tu perfil, analizadas y favoritas.")
         embudo = datos_embudo(todas, ejecuciones, dias, ahora)
         if not embudo:
-            st.info("Aún no hay sincronizaciones registradas en este periodo. El embudo se llena a partir de la próxima ejecución.",
-                    icon=":material/info:")
+            _vacio("Aún no hay sincronizaciones en este periodo. Este gráfico se completa a partir de la próxima.")
         else:
-            st.caption(f"De todo lo publicado en el portal, cuánto pasa cada filtro. {len(ejecuciones)} ejecuciones registradas en total.")
             st.altair_chart(grafico_embudo(embudo, t), width="stretch")
-            _tabla(embudo, {"etapa": "Etapa", "cantidad": "Cantidad"})
+            _tabla(embudo, {"etapa": "Etapa", "cantidad": "Licitaciones"})
 
     # --- Calendario ---
     with st.container(border=True, key="lcard_pan_2"):
-        _titulo("Calendario de cierres")
         cal = datos_calendario(todas, ahora)
+        _titulo("Próximos cierres",
+                f"Tus oportunidades abiertas hasta su fecha de cierre ({_plural(len(cal), 'licitación', 'licitaciones')}). "
+                "El color indica el score.")
         if not cal:
-            st.info("No hay oportunidades activas abiertas.", icon=":material/info:")
+            _vacio("No tienes oportunidades abiertas en este momento.")
         else:
-            st.caption(f"Oportunidades activas (analizadas y favoritas) aún abiertas, hasta su cierre. n = {len(cal)}. "
-                       "No depende del periodo seleccionado.")
             st.altair_chart(grafico_calendario(cal, t, ahora), width="stretch")
-            _tabla(cal, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score IA", "dias": "Días al cierre", "id_externo": "ID"})
+            _tabla(cal, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score", "dias": "Días al cierre", "id_externo": "Código"})
 
     c1, c2 = st.columns([3, 2])
     # --- Oportunidad vs. riesgo ---
     with c1, st.container(border=True, height="stretch", key="lcard_pan_3"):
-        _titulo("Oportunidad vs. riesgo de pago")
         riesgo = datos_riesgo(periodo)
+        _titulo("Score vs. reclamos de pago",
+                f"Cada punto es una licitación ({len(riesgo)}). Considera que los organismos que compran mucho "
+                "suelen acumular más reclamos.")
         if not riesgo:
-            st.info("Sin licitaciones con score y reclamos de pago en el periodo.", icon=":material/info:")
+            _vacio("Sin licitaciones con información de pagos en este periodo.")
         else:
-            st.caption(f"n = {len(riesgo)}. Los reclamos son un conteo absoluto: un organismo que compra mucho "
-                       "acumula más reclamos, así que compáralo con su volumen antes de concluir.")
             st.altair_chart(grafico_riesgo(riesgo, t), width="stretch")
-            _tabla(riesgo, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score IA", "reclamos": "Reclamos"})
+            _tabla(riesgo, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score", "reclamos": "Reclamos de pago"})
 
     # --- Distribución de scores ---
     with c2, st.container(border=True, height="stretch", key="lcard_pan_4"):
-        _titulo("Distribución de scores")
         hist = datos_histograma(periodo)
         n_hist = sum(f["cantidad"] for f in hist)
+        _titulo("Distribución de scores", f"Cuántas licitaciones obtuvieron cada score ({n_hist} en total).")
         if not n_hist:
-            st.info("Sin análisis en el periodo.", icon=":material/info:")
+            _vacio("Sin análisis en este periodo.")
         else:
-            st.caption(f"n = {n_hist}. Si casi todo se concentra en pocos valores, el score discrimina poco.")
             st.altair_chart(grafico_histograma(hist, t), width="stretch")
             _tabla(hist, {"score": "Score", "cantidad": "Licitaciones"})
 
     # --- Calibración ---
     with st.container(border=True, key="lcard_pan_5"):
-        _titulo("Calibración: score IA vs. tu evaluación")
         cal_data = datos_calibracion(periodo)
+        _titulo("¿Qué tan acertada es la IA?", "Se calcula con tus evaluaciones de cada análisis.")
         if cal_data["total_eval_score"]:
+            from web.vistas import html_kpi
             r, n = cal_data["eval_score"], cal_data["total_eval_score"]
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Score acertado", f"{round(100 * r['acertado'] / n)} %")
-            m2.metric("Score muy alto", f"{round(100 * r['muy_alto'] / n)} %")
-            m3.metric("Score muy bajo", f"{round(100 * r['muy_bajo'] / n)} %")
-            st.caption(f"Sobre {n} evaluaciones del score.")
+            pie = f"Según {_plural(n, 'evaluación', 'evaluaciones')}"
+            kpis = [("Score acertado", r['acertado'], "check_circle", "alto"),
+                    ("Score muy alto", r['muy_alto'], "arrow_upward", "medio"),
+                    ("Score muy bajo", r['muy_bajo'], "arrow_downward", "bajo")]
+            for col, (etiqueta, valor, icono, tinte) in zip(st.columns(3), kpis):
+                col.html(html_kpi(etiqueta, f"{round(100 * valor / n)} %", icono, tinte, pie))
+            st.write("")
         if cal_data["total"] < MIN_EVALUACIONES_CALIBRACION:
-            st.info(f"Llevas {cal_data['total']} de {MIN_EVALUACIONES_CALIBRACION} evaluaciones necesarias para dibujar la calibración. "
-                    "Evalúa análisis desde el detalle de cada licitación (sección «Tu evaluación»).", icon=":material/rate_review:")
+            st.info(f"Evalúa al menos {MIN_EVALUACIONES_CALIBRACION} análisis para ver cómo se relaciona el score con tus decisiones "
+                    f"(llevas {cal_data['total']}). Puedes hacerlo desde «Análisis y evaluación» en cada licitación.",
+                    icon=":material/rate_review:")
         else:
-            st.caption(f"n = {cal_data['total']}. Si el score sirve, el porcentaje debería subir con el tramo.")
+            st.caption("Porcentaje de licitaciones a las que postularías, según su score. "
+                       "Si la IA acierta, debería subir a medida que sube el score.")
             st.altair_chart(grafico_calibracion(cal_data["tramos"], t), width="stretch")
-            _tabla(cal_data["tramos"], {"tramo": "Tramo", "n": "Evaluadas", "si": "Sí", "tal_vez": "Tal vez", "no": "No", "pct_si": "% sí"})
+            _tabla(cal_data["tramos"], {"tramo": "Score", "n": "Evaluadas", "si": "Sí", "tal_vez": "Tal vez", "no": "No", "pct_si": "% sí"})

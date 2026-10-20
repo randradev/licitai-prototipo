@@ -25,21 +25,20 @@ from web.estilos import css
 st.set_page_config(page_title="LicitAI", page_icon=":material/radar:", layout="wide")
 config.configurar_logging()
 
-# Estilos según el tema activo (claro u oscuro, sigue al sistema)
-try:
-    tema = "dark" if st.context.theme.type == "dark" else "light"
-except Exception:
-    tema = "light"
-st.html(css(tema))
-st.logo(os.path.join(RAIZ, "web", "assets", f"logo-{tema}.svg"), size="large")
+# Estilos (tema único "premium oscuro"; ver .streamlit/config.toml)
+st.html(css())
+st.logo(os.path.join(RAIZ, "web", "assets", "logo-dark.svg"), size="large")
 
 PAGINAS = os.path.join(RAIZ, "web", "paginas")
 navegacion = st.navigation([
     st.Page(os.path.join(PAGINAS, "oportunidades.py"), title="Oportunidades", icon=":material/target:", default=True),
     st.Page(os.path.join(PAGINAS, "favoritas.py"), title="Favoritas", icon=":material/star:"),
     st.Page(os.path.join(PAGINAS, "archivo.py"), title="Archivo", icon=":material/archive:"),
-    st.Page(os.path.join(PAGINAS, "cola.py"), title="Cola", icon=":material/pending_actions:"),
+    st.Page(os.path.join(PAGINAS, "cola.py"), title="En proceso", icon=":material/pending_actions:"),
     st.Page(os.path.join(PAGINAS, "panorama.py"), title="Panorama", icon=":material/monitoring:"),
     st.Page(os.path.join(PAGINAS, "perfil.py"), title="Perfil", icon=":material/tune:"),
 ], position="top")
 navegacion.run()
+
+st.html('<div class="l-pie"><span>LicitAI · prototipo</span>'
+        '<span>Los análisis son generados por IA y pueden contener errores. Verifica siempre en Mercado Público.</span></div>')

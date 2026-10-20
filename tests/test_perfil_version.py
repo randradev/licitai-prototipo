@@ -51,7 +51,7 @@ def test_analisis_registra_version_del_perfil(tmp_path):
     db = _db_con_extraida(tmp_path)
     AIAnalyst(db, modelo=ModeloFalso(json.dumps(VALIDO))).analizar_licitacion("X")
     assert db.obtener_licitacion("X")["analisis_perfil_version"] == version_perfil(PERFIL)
-    assert version_perfil(PERFIL) in vistas.texto_trazabilidad(db.obtener_licitacion("X"))
+    assert f"Versión del perfil: {version_perfil(PERFIL)}" in vistas.detalles_tecnicos(db.obtener_licitacion("X"))
 
 
 # --- Detección ---
@@ -168,7 +168,7 @@ def test_pagina_perfil_muestra_impacto_y_reanaliza_con_confirmacion(app_perfil, 
     at = _app_perfil()
     assert not at.exception
     boton = next(b for b in at.button if b.key == "btn_reanalizar_lote")
-    assert boton.label == "Re-analizar 1" and boton.disabled          # Exige confirmación explícita
+    assert boton.label == "Actualizar 1 análisis" and boton.disabled          # Exige confirmación explícita
     at.checkbox(key="conf_reanalisis").check().run()
     next(b for b in at.button if b.key == "btn_reanalizar_lote").click().run()
     assert llamadas == ["VIEJA"]                                      # Solo el desalineado
@@ -185,7 +185,7 @@ def test_pagina_perfil_quita_de_la_cola(app_perfil):
 
 def test_cambiar_perfil_marca_analisis_como_anteriores(app_perfil):
     at = _app_perfil()
-    next(ta for ta in at.text_area if ta.label == "Bio Estratégica (Contexto IA)").input("Nueva bio")
-    next(b for b in at.button if "Guardar Cambios" in b.label).click().run()
+    next(ta for ta in at.text_area if ta.label == "Describe tu empresa").input("Nueva bio")
+    next(b for b in at.button if "Guardar cambios" in b.label).click().run()
     assert any("no cambian" in s.value for s in at.success)
-    assert next(b for b in at.button if b.key == "btn_reanalizar_lote").label == "Re-analizar 2"   # Ahora ambos quedan desalineados
+    assert next(b for b in at.button if b.key == "btn_reanalizar_lote").label == "Actualizar 2 análisis"   # Ahora ambos quedan desalineados

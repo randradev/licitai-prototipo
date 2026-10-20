@@ -49,14 +49,14 @@ def test_embudo_no_duplica_ejecuciones_del_mismo_dia_y_excluye_previas():
     licits = [_l("A"), _l("B", estado="favorita"), _l("C", score=None, estado="pendiente"),
               _l("VIEJA", creada="2026-02-05 10:00:00")]   # Anterior a la primera ejecución registrada
     etapas = {e["etapa"]: e["cantidad"] for e in panorama.datos_embudo(licits, ejecuciones, ahora=AHORA)}
-    assert etapas == {"Listado del portal": 2009, "Relevantes": 3, "Analizadas por IA": 2, "Favoritas": 1}
+    assert etapas == {"Publicadas en el portal": 2009, "Coinciden con tu perfil": 3, "Analizadas por la IA": 2, "Favoritas": 1}
 
 
 def test_embudo_respeta_periodo():
     ejecuciones = [{"fecha_consulta": "2026-10-20", "total_listado": 1000}, {"fecha_consulta": "2026-09-01", "total_listado": 500}]
     licits = [_l("A"), _l("B", creada="2026-09-01 10:00:00")]
     etapas = {e["etapa"]: e["cantidad"] for e in panorama.datos_embudo(licits, ejecuciones, dias=7, ahora=AHORA)}
-    assert etapas["Listado del portal"] == 1000 and etapas["Relevantes"] == 1
+    assert etapas["Publicadas en el portal"] == 1000 and etapas["Coinciden con tu perfil"] == 1
 
 
 # --- Calendario, riesgo, histograma ---

@@ -27,7 +27,7 @@ def test_score_y_nivel():
 def test_info_pago_distingue_procedencia():
     assert helpers.info_pago({"reclamos_pago_n": None, "reclamo_pago": None}) == (None, None)
     fuente, ia = helpers.info_pago({"reclamos_pago_n": 180, "reclamo_pago": "Riesgo alto"})
-    assert "180" in fuente and "fuente" in fuente and ia == "Riesgo alto"
+    assert "180" in fuente and "Fuente: Mercado Público" in fuente and ia == "Riesgo alto"
     # El antiguo heurístico ('0' en el texto => verde) ya no existe
     assert helpers.info_pago({"reclamos_pago_n": 0, "reclamo_pago": "No informado"})[1] is None
 
@@ -70,7 +70,7 @@ def test_tarjeta_html_escapa_texto_externo():
     html = helpers.html_tarjeta({"id_externo": "X<1>", "titulo": "<script>alert(1)</script>", "organismo": "A & B",
                                  "score_ia": 9, "fecha_cierre": None, "region": "Región del Maule", "reclamos_pago_n": 5})
     assert "<script>" not in html and "&lt;script&gt;" in html and "A &amp; B" in html and "X&lt;1&gt;" in html
-    assert "l-alto" in html and "Maule" in html and "5 reclamos de pago" in html
+    assert helpers.COLOR_NIVEL["alto"] in html and "Maule" in html and "5 reclamos de pago" in html
 
 
 LISTA = [
@@ -107,10 +107,54 @@ def test_metricas_resumen():
     assert m == {"activas": 3, "cierran_7": 1, "score_promedio": 7.5, "en_cola": 1}
 
 
-def test_trazabilidad_y_evaluacion_desactualizada():
-    assert "sin registro" in helpers.texto_trazabilidad({})
-    texto = helpers.texto_trazabilidad({"analisis_fecha": "2026-10-20T10:00:00", "analisis_modelo": "m", "analisis_prompt_version": "v1"})
-    assert "20/10/2026 10:00" in texto and "m" in texto and "v1" in texto
+def test_trazabilidad_sin_jerga_y_detalles_aparte():
+    assert helpers.texto_trazabilidad({}) == "" and helpers.detalles_tecnicos({}) == []
+    licit = {"analisis_fecha": "2026-10-20T10:00:00", "analisis_modelo": "m", "analisis_prompt_version": "v1",
+             "analisis_perfil_version": "abc12345"}
+    assert helpers.texto_trazabilidad(licit) == "Analizado el 20/10/2026 a las 10:00"
+    assert helpers.detalles_tecnicos(licit) == ["Modelo: m", "Versión del prompt: v1", "Versión del perfil: abc12345"]
+    assert "Detalles técnicos" in helpers.html_detalles_tecnicos(["<x>"]) and "&lt;x&gt;" in helpers.html_detalles_tecnicos(["<x>"])
+    assert helpers.html_detalles_tecnicos([]) == ""
+
+
+@pytest.mark.parametrize("tecnico,esperado", [
+    ("Extracción: TimeoutException: Message: timeout", "no respondió a tiempo"),
+    ("Extracción: No se encontró el enlace a la ficha en el buscador del portal", "No se encontró la licitación"),
+    ("Extracción: Texto de la ficha insuficiente o no reconocido (12 caracteres)", "no se pudo leer completa"),
+    ("IA: Respuesta de IA inválida: JSON inválido o truncado", "no entregó un análisis válido"),
+    ("Cuota de Gemini agotada: 429 Resource has been exhausted", "límite de uso de la IA"),
+    ("La licitación cerró antes de poder procesarse", "cerró antes"),
+    ("Ya no coincide con las keywords del perfil", "palabras clave"),
+    ("MP_TICKET no configurado en .env", "acceso a Mercado Público"),
+    ("No se pudo iniciar Chrome: WebDriverException: x", "Google Chrome"),
+    ("Ya hay una sincronización en curso (iniciada hace 2 min).", "en curso"),
+    ("algo totalmente desconocido", "No se pudo completar"),
+])
+def test_mensaje_error_amigable(tecnico, esperado):
+    mensaje = helpers.mensaje_error_amigable(tecnico)
+    assert esperado in mensaje
+    assert "Exception" not in mensaje and "429" not in mensaje and ".env" not in mensaje   # Sin jerga técnica
+
+
+def test_mensaje_sincronizacion():
+    base = {"analizadas": 0, "en_cola": 0, "fallidas": 0, "detenido_por": None, "error_descubrimiento": None}
+    assert helpers.mensaje_sincronizacion(dict(base, analizadas=3), "success") == "3 licitaciones nuevas analizadas."
+    assert helpers.mensaje_sincronizacion(dict(base, analizadas=1), "success") == "1 licitación nueva analizada."
+    assert helpers.mensaje_sincronizacion(base, "info") == "No hubo licitaciones nuevas para analizar."
+    texto = helpers.mensaje_sincronizacion(dict(base, analizadas=2, en_cola=3, fallidas=1,
+                                                error_descubrimiento="La API de Mercado Público no respondió en 30 s"), "warning")
+    assert "3 quedan en espera" in texto and "1 no se pudieron completar" in texto and "no respondió" in texto
+    assert "API" not in texto
+    error = helpers.mensaje_sincronizacion(dict(base, detenido_por="No hay palabras clave positivas en el perfil de negocio."), "error")
+    assert "palabra clave" in error
+
+
+def test_anillo_de_score():
+    assert "--p:80%" in helpers.html_anillo(8) and "<b>8</b>" in helpers.html_anillo(8)
+    assert "--p:0%" in helpers.html_anillo(None) and "–" in helpers.html_anillo(None)
+
+
+def test_evaluacion_desactualizada():
     assert helpers.evaluacion_desactualizada({"eval_fecha": "2026-10-19T10:00:00", "analisis_fecha": "2026-10-20T10:00:00"})
     assert not helpers.evaluacion_desactualizada({"eval_fecha": "2026-10-21T10:00:00", "analisis_fecha": "2026-10-20T10:00:00"})
     assert not helpers.evaluacion_desactualizada({"analisis_fecha": "2026-10-20T10:00:00"})
@@ -153,13 +197,18 @@ def _app(pagina=None):
 def test_todas_las_paginas_renderizan_sin_excepciones(app_db, pagina):
     at = _app(pagina)
     assert not at.exception
-    assert any("Configura al menos una keyword" in w.value for w in at.warning)
+    assert any("Agrega al menos una palabra clave" in w.value for w in at.warning)
 
 
-def test_oportunidades_metricas(app_db):
+def test_oportunidades_kpis(app_db):
     at = _app()
-    etiquetas = [m.label for m in at.metric]
-    assert "Oportunidades activas" in etiquetas and "Cierran en ≤ 7 días" in etiquetas
+    html = " ".join(str(e.proto) for e in at.get("html"))
+    assert "Oportunidades activas" in html and "Cierran esta semana" in html and "En proceso" in html
+
+
+def test_kpi_html_escapa():
+    html = helpers.html_kpi("<b>", "<1>", "target", "alto", "<pie>")
+    assert "&lt;b&gt;" in html and "&lt;1&gt;" in html and "&lt;pie&gt;" in html and "l-tinte-alto" in html
 
 
 def test_botones_de_estado_en_cada_pagina(app_db):
@@ -254,7 +303,7 @@ def test_boton_reanalizar_guarda_nuevo_analisis(app_db, monkeypatch):
     assert llamadas == ["F"]
     fila = app_db.obtener_licitacion("F")
     assert fila["score_ia"] == 4 and fila["estado"] == "favorita" and json.loads(fila["analisis_ia_json"])["veredicto"] == "nuevo"
-    assert any("re-analizada" in s.value for s in at.success)
+    assert any("Análisis actualizado" in s.value for s in at.success)
 
 
 def test_boton_reanalizar_fallido_conserva_anterior(app_db, monkeypatch):
@@ -270,7 +319,7 @@ def test_boton_reanalizar_fallido_conserva_anterior(app_db, monkeypatch):
     _boton(at, "ia_A").click().run()
     despues = app_db.obtener_licitacion("A")
     assert (despues["score_ia"], despues["analisis_ia_json"]) == (antes["score_ia"], antes["analisis_ia_json"])
-    assert any("se conserva el análisis anterior" in e.value for e in at.error)
+    assert any("se mantiene el anterior" in e.value for e in at.error)
 
 
 def test_boton_reanalizar_solo_si_hay_ficha(app_db):
@@ -280,8 +329,8 @@ def test_boton_reanalizar_solo_si_hay_ficha(app_db):
 
 def test_guardar_perfil(app_db):
     at = _app("perfil")
-    next(ta for ta in at.text_area if ta.label == "Keywords Positivas").input("reactivos, ")
-    next(b for b in at.button if "Guardar Cambios" in b.label).click().run()
+    next(ta for ta in at.text_area if ta.label == "Palabras clave de interés").input("reactivos, ")
+    next(b for b in at.button if "Guardar cambios" in b.label).click().run()
     assert app_db.obtener_perfil()["keywords_pos"] == "reactivos, "
     assert not at.exception
 
@@ -298,6 +347,6 @@ def test_panorama_con_ejecuciones_y_evaluaciones(app_db):
     at = _app("panorama")
     assert not at.exception
     textos = " ".join(m.value for m in at.markdown)
-    assert "Embudo de filtrado" in textos and "Calibración" in textos
-    assert not any("evaluaciones necesarias" in i.value for i in at.info)
-    assert {b.label for b in at.get("download_button")} >= {"JSON", "CSV"}
+    assert "De lo publicado a tus oportunidades" in textos and "acertada es la IA" in textos
+    assert not any("Evalúa al menos" in i.value for i in at.info)
+    assert {b.label for b in at.get("download_button")} >= {"JSON", "Excel (CSV)"}

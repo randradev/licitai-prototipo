@@ -3,8 +3,9 @@
 Módulo: Vistas (vistas)
 ----------------------
 Capa de presentación del dashboard. Contiene:
-1. Helpers puros (sin Streamlit) para formatear, filtrar y resumir licitaciones.
-2. Constructores de HTML para tarjetas e insignias (todo texto externo se escapa).
+1. Helpers puros (sin Streamlit) para formatear, filtrar, resumir y redactar
+   mensajes para el usuario final (sin jerga técnica).
+2. Constructores de HTML para tarjetas, KPIs e insignias (todo texto externo se escapa).
 3. Las funciones que dibujan cada página (las invoca web/paginas/*.py).
 
 Los widgets interactivos (botones, formularios) son de Streamlit; el HTML solo
@@ -34,6 +35,9 @@ POSTULARIA_LABELS = {"si": "Sí", "tal_vez": "Tal vez", "no": "No"}
 
 ORDENES = ("Cierre más próximo", "Mayor score", "Más recientes")
 ESTADOS_COLA = ("pendiente", "extraido", "error")
+
+# Colores de marca del anillo de score (paleta de estado; ver web/estilos.py)
+COLOR_NIVEL = {"alto": "#0ca30c", "medio": "#fab219", "bajo": "#d03b3b", "nulo": "#5b5f67"}
 
 
 # ===================================================================
@@ -69,7 +73,7 @@ def titulo_de(licit, analisis=None):
 
 
 def organismo_de(licit):
-    return licit['organismo'] if es_valor_util(licit.get('organismo')) else "Organismo no detectado"
+    return licit['organismo'] if es_valor_util(licit.get('organismo')) else "Organismo no identificado"
 
 
 def info_pago(licit):
@@ -83,7 +87,7 @@ def info_pago(licit):
     n = licit.get('reclamos_pago_n')
     fuente = None
     if n is not None:
-        fuente = f"{n} reclamos por incumplir plazo de pago (últimos 12 meses) — fuente: ficha de Mercado Público"
+        fuente = f"{n} reclamos por pagos atrasados en los últimos 12 meses · Fuente: Mercado Público"
     ia = licit.get('reclamo_pago') if es_valor_util(licit.get('reclamo_pago')) else None
     return fuente, ia
 
@@ -121,12 +125,20 @@ def region_corta(region):
 
 
 def texto_trazabilidad(licit):
-    """Describir con qué modelo, prompt y cuándo se generó el análisis vigente."""
+    """Fecha del análisis vigente, en lenguaje de usuario (o '' si no se registró)."""
     if not licit.get('analisis_fecha'):
-        return "Análisis sin registro de modelo ni versión (anterior a la trazabilidad)."
-    return (f"Análisis del {formatear_fecha(licit['analisis_fecha'], con_hora=True)} · "
-            f"modelo {licit.get('analisis_modelo') or '?'} · prompt {licit.get('analisis_prompt_version') or '?'} · "
-            f"perfil {licit.get('analisis_perfil_version') or '?'}")
+        return ""
+    fecha = parsear_fecha_hora(licit['analisis_fecha'])
+    return f"Analizado el {fecha.strftime('%d/%m/%Y')} a las {fecha.strftime('%H:%M')}" if fecha else ""
+
+
+def detalles_tecnicos(licit):
+    """Datos técnicos del análisis (modelo, prompt, perfil) para el desplegable «Detalles técnicos»."""
+    if not licit.get('analisis_fecha'):
+        return []
+    return [f"Modelo: {licit.get('analisis_modelo') or '—'}",
+            f"Versión del prompt: {licit.get('analisis_prompt_version') or '—'}",
+            f"Versión del perfil: {licit.get('analisis_perfil_version') or '—'}"]
 
 
 def analisis_con_perfil_anterior(licit, version_actual):
@@ -225,6 +237,55 @@ def metricas_resumen(licitaciones, ahora=None):
     }
 
 
+# --- Mensajes para el usuario final (sin jerga técnica; el detalle va al log) ---
+
+def mensaje_error_amigable(texto):
+    """Traducir un error técnico guardado (ultimo_error, detenido_por...) a lenguaje de usuario."""
+    t = normalizar_texto(texto or "")
+    reglas = [
+        ("cerro antes", "La licitación cerró antes de poder analizarla."),
+        ("keywords", "Ya no coincide con tus palabras clave de interés."),
+        ("cuota", "Se alcanzó el límite de uso de la IA. Lo pendiente se analizará en la próxima sincronización."),
+        ("sincronizacion en curso", "Ya hay una sincronización en curso. Espera a que termine e inténtalo de nuevo."),
+        ("palabras clave", "Agrega al menos una palabra clave de interés en Perfil para empezar a buscar."),
+        ("gemini_api_key", "Falta configurar el acceso a la IA (clave de Gemini en la configuración de la app)."),
+        ("mp_ticket", "Falta configurar el acceso a Mercado Público (ticket de la API en la configuración de la app)."),
+        ("chrome", "No se pudo abrir el navegador para leer el portal. Revisa que Google Chrome esté instalado."),
+        ("no respondio", "Mercado Público no respondió a tiempo. Inténtalo más tarde."),
+        ("timeout", "El portal de Mercado Público no respondió a tiempo."),
+        ("api", "No se pudo consultar Mercado Público. Inténtalo más tarde."),
+        ("no se encontro el enlace", "No se encontró la licitación en el buscador del portal."),
+        ("texto de la ficha", "La ficha del portal no se pudo leer completa."),
+        ("perfil de negocio", "Completa tu perfil de negocio para poder analizar licitaciones."),
+        ("ia:", "La IA no entregó un análisis válido."),
+        ("extraccion:", "No se pudo leer la ficha en el portal."),
+    ]
+    for patron, mensaje in reglas:
+        if patron in t:
+            return mensaje
+    return "No se pudo completar el proceso."
+
+
+def mensaje_sincronizacion(resumen, nivel):
+    """Mensaje final de la sincronización para el usuario (el resumen técnico queda en el log)."""
+    if nivel == "error":
+        return mensaje_error_amigable(resumen.get("detenido_por") or resumen.get("error_descubrimiento"))
+    partes = []
+    n = resumen.get("analizadas", 0)
+    if n:
+        partes.append(f"{n} {'licitación nueva analizada' if n == 1 else 'licitaciones nuevas analizadas'}.")
+    else:
+        partes.append("No hubo licitaciones nuevas para analizar.")
+    if resumen.get("en_cola"):
+        partes.append(f"{resumen['en_cola']} quedan en espera para la próxima sincronización.")
+    if resumen.get("fallidas"):
+        partes.append(f"{resumen['fallidas']} no se pudieron completar y se reintentarán.")
+    for aviso in (resumen.get("detenido_por"), resumen.get("error_descubrimiento")):
+        if aviso:
+            partes.append(mensaje_error_amigable(aviso))
+    return " ".join(partes)
+
+
 # ===================================================================
 # HTML (presentación; todo texto externo se escapa)
 # ===================================================================
@@ -234,12 +295,17 @@ def _chip(texto, icono=None, nivel=""):
     return f'<span class="l-chip {"l-" + nivel if nivel else ""}">{ico}{escape(str(texto))}</span>'
 
 
-def html_tarjeta(licit, analisis=None, ahora=None, perfil_anterior=False):
-    """Cabecera de tarjeta: insignia de score, título, organismo y chips de contexto."""
-    score = score_de(licit)
+def html_anillo(score):
+    """Score como anillo de progreso (0-10) con el número al centro (degradado cónico: sin SVG)."""
     nivel = nivel_score(score)
-    insignia = (f'<div class="l-score l-{nivel}"><b>{score if score is not None else "–"}</b>'
-                f'<span>{"score" if score is not None else "s/score"}</span></div>')
+    avance = round(100 * score / config.SCORE_MAX) if score is not None else 0
+    return (f'<div class="l-anillo" title="Score según la IA" '
+            f'style="--p:{avance}%; --c:{COLOR_NIVEL[nivel]}">'
+            f'<div class="l-anillo-txt"><b>{score if score is not None else "–"}</b><small>SCORE</small></div></div>')
+
+
+def html_tarjeta(licit, analisis=None, ahora=None, perfil_anterior=False):
+    """Cabecera de tarjeta: anillo de score, título, organismo y chips de contexto."""
     chips = [_chip(etiqueta_cierre(licit, ahora), "schedule", urgencia_cierre(licit, ahora))]
     if es_valor_util(licit.get('region')):
         chips.append(_chip(region_corta(licit['region']), "location_on"))
@@ -247,7 +313,7 @@ def html_tarjeta(licit, analisis=None, ahora=None, perfil_anterior=False):
         chips.append(_chip(f"{licit['reclamos_pago_n']} reclamos de pago", "payments"))
     if perfil_anterior:
         chips.append(_chip("Analizada con un perfil anterior", "history", "medio"))
-    return (f'<div class="l-tarjeta">{insignia}<div class="l-cuerpo">'
+    return (f'<div class="l-tarjeta">{html_anillo(score_de(licit))}<div class="l-cuerpo">'
             f'<p class="l-titulo">{escape(titulo_de(licit, analisis))}</p>'
             f'<p class="l-org">{escape(organismo_de(licit))} · <span class="l-id">{escape(licit["id_externo"])}</span></p>'
             f'<div class="l-chips">{"".join(chips)}</div></div></div>')
@@ -257,9 +323,29 @@ def html_lista(items):
     return '<ul class="l-lista">' + "".join(f"<li>{escape(str(i))}</li>" for i in items) + "</ul>"
 
 
-def html_cabecera(titulo, subtitulo=""):
+def html_cabecera(titulo, subtitulo="", icono="radar"):
     sub = f"<p>{escape(subtitulo)}</p>" if subtitulo else ""
-    return f'<div class="l-cabecera"><h1>{escape(titulo)}</h1>{sub}</div>'
+    return (f'<div class="l-cabecera"><div class="l-ico-pag"><span>{icono}</span></div>'
+            f'<div><h1>{escape(titulo)}</h1>{sub}</div></div>')
+
+
+def html_kpi(etiqueta, valor, icono, tinte="acento", pie=""):
+    pie_html = f'<div class="l-kpi-pie">{escape(pie)}</div>' if pie else ""
+    return (f'<div class="l-kpi"><div class="l-kpi-top"><span class="l-kpi-label">{escape(etiqueta)}</span>'
+            f'<span class="l-kpi-ico l-tinte-{tinte}">{icono}</span></div>'
+            f'<div class="l-kpi-valor">{escape(str(valor))}</div>{pie_html}</div>')
+
+
+def html_vacio(titulo, texto, icono="inbox"):
+    return (f'<div class="l-vacio"><span class="l-ico">{icono}</span>'
+            f'<h4>{escape(titulo)}</h4><p>{escape(texto)}</p></div>')
+
+
+def html_detalles_tecnicos(lineas):
+    if not lineas:
+        return ""
+    return ('<details class="l-tec"><summary>Detalles técnicos</summary><div>'
+            + "<br>".join(escape(x) for x in lineas) + '</div></details>')
 
 
 # ===================================================================
@@ -275,6 +361,10 @@ def seccion(texto):
     st.html(f'<div class="l-seccion">{escape(texto)}</div>')
 
 
+def vacio(titulo, texto, icono="inbox"):
+    st.html(html_vacio(titulo, texto, icono))
+
+
 def mostrar_mensaje_pendiente():
     """Mostrar (una vez) el resultado de la última acción, sobreviviendo al rerun."""
     mensaje = st.session_state.pop('ultimo_mensaje', None)
@@ -285,61 +375,75 @@ def mostrar_mensaje_pendiente():
         getattr(st, nivel, st.info)(texto, icon=iconos.get(nivel))
 
 
-def cabecera(base, titulo, subtitulo):
+def cabecera(base, titulo, subtitulo, icono):
     """Cabecera común: título de la página a la izquierda; sincronización a la derecha."""
-    c1, c2 = st.columns([3, 2], vertical_alignment="bottom")
-    c1.html(html_cabecera(titulo, subtitulo))
+    c1, c2 = st.columns([3, 1.6], vertical_alignment="bottom")
+    c1.html(html_cabecera(titulo, subtitulo, icono))
     with c2:
         ejecuciones = base.obtener_ejecuciones()
         if ejecuciones:
             u = ejecuciones[0]
-            st.caption(f"Última sincronización: {formatear_fecha(u['inicio'], con_hora=True)} · "
-                       f"{u['analizadas']} analizadas de {u['total_listado']} en el listado")
+            inicio = parsear_fecha_hora(u["inicio"])
+            cuando = inicio.strftime("%d/%m %H:%M") if inicio else "—"
+            st.html(f'<div class="l-sync">Última sincronización <b>{cuando}</b> · {u["analizadas"]} analizadas</div>')
         if st.button("Sincronizar ahora", icon=":material/sync:", type="primary", width="stretch", key="btn_sync",
-                     help=f"Consulta las licitaciones publicadas hoy y procesa hasta {config.MAX_PROCESAR} de la cola. "
-                          "Puede tardar varios minutos."):
-            with st.status("Sincronizando con Mercado Público…", expanded=False) as status:
+                     help=f"Busca las licitaciones publicadas hoy y analiza hasta {config.MAX_PROCESAR} nuevas. "
+                          "Puede tardar unos minutos."):
+            with st.status("Buscando y analizando licitaciones…", expanded=False) as status:
                 try:
                     # Importación diferida para evitar dependencias circulares
                     from main import ejecutar_pipeline, describir_resumen
                     resumen = ejecutar_pipeline(db=base)
-                    nivel, mensaje = describir_resumen(resumen)
+                    nivel, _ = describir_resumen(resumen)
+                    mensaje = mensaje_sincronizacion(resumen, nivel)
                     status.update(label="Sincronización finalizada", state="error" if nivel == "error" else "complete")
-                except Exception as e:
+                except Exception:
                     log.exception("Error inesperado en la sincronización")
-                    nivel, mensaje = "error", f"Error inesperado en el proceso: {type(e).__name__}: {e}"
-                    status.update(label="Error en la sincronización", state="error")
+                    nivel, mensaje = "error", "Ocurrió un error inesperado durante la sincronización. El detalle quedó registrado."
+                    status.update(label="No se pudo completar la sincronización", state="error")
             st.session_state['ultimo_mensaje'] = (nivel, mensaje)
             st.rerun()
 
     perfil = base.obtener_perfil() or {}
     if not normalizar_keywords(perfil.get('keywords_pos')):
-        st.warning("Configura al menos una keyword positiva en **Perfil**: sin ellas la sincronización no se ejecuta.",
+        st.warning("Agrega al menos una palabra clave de interés en **Perfil** para empezar a buscar licitaciones.",
                    icon=":material/tune:")
     mostrar_mensaje_pendiente()
 
 
 def _render_pago(licit):
-    """Reclamos de pago con su procedencia: fuente, interpretación IA o sin datos."""
+    """Reclamos de pago con su procedencia: fuente oficial, lectura de la IA o sin datos."""
     fuente, ia = info_pago(licit)
     if fuente:
-        st.html(f'<div class="l-pago">{escape(fuente)}</div>')
+        st.html(f'<div class="l-pago"><span class="l-ico">verified</span>{escape(fuente)}</div>')
     if ia:
-        st.html(f'<div class="l-nota">Interpretación IA (no verificada): {escape(ia)}</div>')
+        st.html(f'<div class="l-nota">Lectura de la IA (sin verificar): {escape(ia)}</div>')
     if not fuente and not ia:
-        st.html('<div class="l-nota">Reclamos de pago: sin datos verificados</div>')
+        st.html('<div class="l-nota">Sin información verificada sobre pagos.</div>')
+
+
+def _fechas_y_trazabilidad(l, con_analisis=True):
+    cierre = formatear_fecha(l.get('fecha_cierre'), con_hora=True) or "No disponible"
+    publicacion = formatear_fecha(l.get('fecha_publicacion')) or "No disponible"
+    st.html(f'<div class="l-dato"><b>Publicación</b> {publicacion} &nbsp;·&nbsp; <b>Cierre</b> {cierre}</div>')
+    if con_analisis:
+        traza = texto_trazabilidad(l)
+        if traza:
+            st.html(f'<div class="l-nota">{escape(traza)}</div>' + html_detalles_tecnicos(detalles_tecnicos(l)))
 
 
 def _reanalizar(base, id_externo):
     """Ejecutar un nuevo análisis real con Gemini; si falla se conserva el anterior."""
     from core.ai_analyst import AIAnalyst, AnalisisFallido, CuotaAgotada
-    with st.spinner("Consultando a la IA..."):
+    with st.spinner("Actualizando el análisis…"):
         try:
             analisis = AIAnalyst(base).analizar_licitacion(id_externo)
         except (ValueError, AnalisisFallido, CuotaAgotada) as e:
-            st.session_state['ultimo_mensaje'] = ("error", f"No se pudo re-analizar {id_externo}; se conserva el análisis anterior. Detalle: {e}")
+            log.warning(f"Re-análisis fallido de {id_externo}: {e}")
+            motivo = mensaje_error_amigable(f"IA: {e}" if not isinstance(e, ValueError) else "GEMINI_API_KEY")
+            st.session_state['ultimo_mensaje'] = ("error", f"No se pudo actualizar el análisis; se mantiene el anterior. {motivo}")
         else:
-            st.session_state['ultimo_mensaje'] = ("success", f"{id_externo} re-analizada: {texto_score(analisis['score_ia'])}")
+            st.session_state['ultimo_mensaje'] = ("success", f"Análisis actualizado: score {texto_score(analisis['score_ia'])}.")
     st.rerun()
 
 
@@ -350,7 +454,7 @@ def _form_evaluacion(base, l, prefijo):
     """
     id_ext = l['id_externo']
     if evaluacion_desactualizada(l):
-        st.warning("Tu evaluación corresponde a un análisis anterior: revísala.", icon=":material/history:")
+        st.warning("El análisis cambió desde tu última evaluación. Revísala.", icon=":material/history:")
     with st.form(f"eval_{prefijo}_{id_ext}", border=False):
         opciones_score = list(EVAL_SCORE_LABELS)
         opciones_post = list(POSTULARIA_LABELS)
@@ -361,18 +465,19 @@ def _form_evaluacion(base, l, prefijo):
         postularia = c2.radio("¿Postularías?", opciones_post, format_func=POSTULARIA_LABELS.get,
                               index=opciones_post.index(l['eval_postularia']) if l.get('eval_postularia') in opciones_post else None,
                               horizontal=True, key=f"evp_{prefijo}_{id_ext}")
-        comentario = st.text_input("Comentario (opcional)", value=l.get('eval_comentario') or "", key=f"evc_{prefijo}_{id_ext}")
-        if st.form_submit_button("Guardar evaluación", icon=":material/save:", key=f"evb_{prefijo}_{id_ext}"):
+        comentario = st.text_input("Comentario (opcional)", value=l.get('eval_comentario') or "", key=f"evc_{prefijo}_{id_ext}",
+                                   placeholder="Ej.: pide experiencia local que no tenemos")
+        if st.form_submit_button("Guardar evaluación", icon=":material/check:", key=f"evb_{prefijo}_{id_ext}"):
             if not eval_score or not postularia:
-                st.warning("Responde ambas preguntas para guardar.")
+                st.warning("Responde ambas preguntas para guardar tu evaluación.")
             else:
                 base.guardar_evaluacion(id_ext, eval_score, postularia, comentario)
-                st.session_state['ultimo_mensaje'] = ("success", f"Evaluación de {id_ext} guardada.")
+                st.session_state['ultimo_mensaje'] = ("success", "Evaluación guardada. ¡Gracias! Esto ayuda a medir qué tan acertada es la IA.")
                 st.rerun()
 
 
 def _detalle_analisis(base, l, an, simplificado=False, prefijo="lista"):
-    """Contenido del desplegable: veredicto, puntos críticos, riesgos, pagos, trazabilidad y evaluación."""
+    """Contenido del desplegable: veredicto, puntos críticos, riesgos, pagos, fechas y evaluación."""
     score = score_de(l)
     if an:
         st.html(f'<div class="l-veredicto"><b>Veredicto IA ·</b> {escape(an.get("veredicto") or "Sin veredicto")}</div>')
@@ -385,17 +490,13 @@ def _detalle_analisis(base, l, an, simplificado=False, prefijo="lista"):
                 seccion("Riesgos")
                 st.html(html_lista(an['riesgos'][:3]) if an['riesgos'] else '<div class="l-nota">—</div>')
             if score is not None and score < config.UMBRAL_DESCARTE and es_valor_util(l.get('motivo_archivo')):
-                st.html(f'<div class="l-nota">Motivo de descarte sugerido por la IA: {escape(l["motivo_archivo"])}</div>')
+                st.html(f'<div class="l-nota">Por qué la IA sugiere descartarla: {escape(l["motivo_archivo"])}</div>')
     elif l.get('analisis_ia_json'):
-        st.warning("El análisis guardado no se pudo leer.")
+        st.warning("Este análisis no está disponible.")
 
     seccion("Pagos del organismo")
     _render_pago(l)
-    cierre = formatear_fecha(l.get('fecha_cierre'), con_hora=True) or "No disponible"
-    publicacion = formatear_fecha(l.get('fecha_publicacion')) or "No disponible"
-    st.html(f'<div class="l-dato"><b>Publicación:</b> {publicacion} &nbsp;·&nbsp; <b>Cierre:</b> {cierre}</div>')
-    if an:
-        st.html(f'<div class="l-nota">{escape(texto_trazabilidad(l))}</div>')
+    _fechas_y_trazabilidad(l, con_analisis=bool(an))
 
     if an and not simplificado:
         seccion("Tu evaluación")
@@ -412,7 +513,7 @@ def _acciones(base, l):
             base.cambiar_estado(id_ext, 'archivada'); st.rerun()
     else:
         if st.button("Restaurar", icon=":material/undo:", key=f"re_{id_ext}", width="stretch",
-                     help="Devolver a Oportunidades"):
+                     help="Volver a Oportunidades"):
             base.cambiar_estado(id_ext, 'analizado'); st.rerun()
     _mas_acciones(base, l, f"ia_{id_ext}")
 
@@ -423,48 +524,58 @@ def _mas_acciones(base, l, clave_reanalizar):
         return
     with st.popover("Más", icon=":material/more_horiz:", width="stretch"):
         if l.get('link'):
-            st.link_button("Ver en el portal", l['link'], icon=":material/open_in_new:", width="stretch")
+            st.link_button("Ver en Mercado Público", l['link'], icon=":material/open_in_new:", width="stretch")
         if l.get('descripcion_pro'):
-            if st.button("Re-analizar con IA", icon=":material/refresh:", key=clave_reanalizar, width="stretch",
-                         help="Pedir un nuevo análisis a Gemini (si falla se conserva el actual)"):
+            if st.button("Actualizar análisis", icon=":material/refresh:", key=clave_reanalizar, width="stretch",
+                         help="Pide un análisis nuevo a la IA. Si algo falla, se mantiene el actual."):
                 _reanalizar(base, l['id_externo'])
+
+
+def _clave_tarjeta(prefijo, l):
+    """Key del contenedor; incluye la urgencia para la franja de color (ver estilos)."""
+    return f"lcard_u-{urgencia_cierre(l) or 'n'}_{prefijo}{l['id_externo']}"
 
 
 def tarjeta(base, l, simplificado=False, version_actual=None):
     """Una licitación como tarjeta: cabecera HTML, acciones y desplegable con el análisis."""
     an = cargar_analisis_guardado(l.get('analisis_ia_json'))
     perfil_anterior = bool(version_actual) and analisis_con_perfil_anterior(l, version_actual)
-    with st.container(border=True, key=f"lcard_{l['id_externo']}"):
+    with st.container(border=True, key=_clave_tarjeta("", l)):
         c1, c2 = st.columns([5, 1.25])
         c1.html(html_tarjeta(l, an, perfil_anterior=perfil_anterior))
         with c2:
             _acciones(base, l)
-        with st.expander("Análisis y evaluación" if not simplificado else "Análisis", icon=":material/insights:"):
+        with st.expander("Análisis y evaluación" if not simplificado else "Ver análisis", icon=":material/insights:"):
             _detalle_analisis(base, l, an, simplificado)
 
 
 def _filtros(lista, clave, ocultar_cerradas=True):
     """Fila única de filtros sobre la lista; devuelve (filtradas, orden)."""
     regiones = sorted({l['region'] for l in lista if es_valor_util(l.get('region'))})
-    c1, c2, c3, c4, c5 = st.columns([2, 1.2, 1.7, 1.9, 1.1], vertical_alignment="bottom")
+    c1, c2, c3 = st.columns([2.2, 1.2, 1.7], vertical_alignment="bottom")
     texto = c1.text_input("Buscar", placeholder="Título u organismo", key=f"f_txt_{clave}", icon=":material/search:")
     score_min = c2.select_slider("Score mínimo", options=list(range(1, 11)), value=1, key=f"f_score_{clave}")
-    sel_regiones = c3.multiselect("Región", regiones, key=f"f_reg_{clave}", placeholder="Todas")
-    orden = c4.selectbox("Ordenar por", ORDENES, key=f"f_ord_{clave}")
-    ocultar = c5.checkbox("Ocultar cerradas", value=ocultar_cerradas, key=f"f_cer_{clave}")
+    sel_regiones = c3.multiselect("Región", regiones, key=f"f_reg_{clave}", placeholder="Todas las regiones",
+                                  format_func=region_corta)
+    c4, c5 = st.columns([3, 1], vertical_alignment="center")
+    # Radio con aspecto de "píldoras" (CSS en estilos: key "pill_*")
+    orden = c4.radio("Ordenar por", ORDENES, key=f"pill_ord_{clave}", horizontal=True,
+                     label_visibility="collapsed") or ORDENES[0]
+    ocultar = c5.toggle("Ocultar cerradas", value=ocultar_cerradas, key=f"f_cer_{clave}")
     filtradas = filtrar_y_ordenar(lista, texto, score_min, sel_regiones, orden, ocultar)
     st.caption(f"{len(filtradas)} de {len(lista)} licitaciones")
     return filtradas, orden
 
 
-def lista_tarjetas(base, lista, clave, simplificado=False, ocultar_cerradas=True, vacio="No hay licitaciones para mostrar."):
+def lista_tarjetas(base, lista, clave, simplificado=False, ocultar_cerradas=True,
+                   vacio_titulo="Nada por aquí", vacio_texto="No hay licitaciones para mostrar."):
     """Lista filtrable de tarjetas."""
     if not lista:
-        st.info(vacio, icon=":material/inbox:")
+        vacio(vacio_titulo, vacio_texto)
         return
     filtradas, orden = _filtros(lista, clave, ocultar_cerradas)
     if not filtradas:
-        st.info("Ninguna licitación coincide con los filtros.", icon=":material/filter_alt_off:")
+        vacio("Sin resultados", "Ninguna licitación coincide con los filtros. Prueba ampliando la búsqueda.", "filter_alt_off")
         return
     version = version_perfil(base.obtener_perfil())
     if orden == "Más recientes":
@@ -483,32 +594,34 @@ def lista_tarjetas(base, lista, clave, simplificado=False, ocultar_cerradas=True
 
 def pagina_oportunidades():
     base = db()
-    cabecera(base, "Oportunidades", "Licitaciones analizadas por la IA según tu perfil de negocio.")
+    cabecera(base, "Oportunidades", "Licitaciones que la IA evaluó según tu perfil de negocio.", "target")
     todas = base.obtener_licitaciones()
     m = metricas_resumen(todas)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Oportunidades activas", m["activas"], help="Analizadas y favoritas aún abiertas.", border=True)
-    c2.metric("Cierran en ≤ 7 días", m["cierran_7"], border=True)
-    c3.metric("Score promedio", f"{m['score_promedio']}".replace(".", ",") if m["score_promedio"] is not None else "—",
-              help="Promedio de las oportunidades activas.", border=True)
-    c4.metric("Pendientes / errores", m["en_cola"], border=True)
+    promedio = f"{m['score_promedio']}".replace(".", ",") if m["score_promedio"] is not None else "—"
+    kpis = [("Oportunidades activas", m["activas"], "target", "acento", "Abiertas, incluidas favoritas"),
+            ("Cierran esta semana", m["cierran_7"], "schedule", "medio" if m["cierran_7"] else "acento", "En los próximos 7 días"),
+            ("Score promedio", promedio, "insights", "alto", "De las oportunidades activas"),
+            ("En proceso", m["en_cola"], "pending_actions", "acento", "Esperando lectura o análisis")]
+    for col, (etiqueta, valor, icono, tinte, pie) in zip(st.columns(4), kpis):
+        col.html(html_kpi(etiqueta, valor, icono, tinte, pie))
     st.write("")
     lista_tarjetas(base, [l for l in todas if l['estado'] == 'analizado'], "analizadas",
-                   vacio="No hay licitaciones analizadas. Pulsa «Sincronizar ahora» para buscar las de hoy.")
+                   vacio_titulo="Aún no hay oportunidades",
+                   vacio_texto="Pulsa «Sincronizar ahora» para buscar y analizar las licitaciones publicadas hoy.")
 
 
 def pagina_favoritas():
     base = db()
-    cabecera(base, "Favoritas", "Las oportunidades que estás preparando, ordenadas por cierre.")
+    cabecera(base, "Favoritas", "Las oportunidades que estás preparando, ordenadas por fecha de cierre.", "star")
     favs = filtrar_y_ordenar([l for l in base.obtener_licitaciones() if l['estado'] == 'favorita'], orden="Cierre más próximo")
     if not favs:
-        st.info("Aún no tienes favoritas. Márcalas desde Oportunidades.", icon=":material/star:")
+        vacio("Aún no tienes favoritas", "Marca como favoritas las oportunidades que quieras preparar.", "star")
         return
 
     version = version_perfil(base.obtener_perfil())
     for l in favs:
         an = cargar_analisis_guardado(l.get('analisis_ia_json'))
-        with st.container(border=True, key=f"lcard_fav_{l['id_externo']}"):
+        with st.container(border=True, key=_clave_tarjeta("fav_", l)):
             c_head, c_acc = st.columns([5, 1.25])
             c_head.html(html_tarjeta(l, an, perfil_anterior=bool(version) and analisis_con_perfil_anterior(l, version)))
             with c_acc:
@@ -529,20 +642,17 @@ def pagina_favoritas():
                         seccion("Riesgos")
                         st.html(html_lista(an['riesgos']) if an['riesgos'] else '<div class="l-nota">—</div>')
                 else:
-                    st.caption("Sin análisis disponible.")
+                    st.html('<div class="l-nota">Esta licitación aún no tiene análisis.</div>')
                 seccion("Pagos del organismo")
                 _render_pago(l)
-                cierre = formatear_fecha(l.get('fecha_cierre'), con_hora=True) or "No disponible"
-                publicacion = formatear_fecha(l.get('fecha_publicacion')) or "No disponible"
-                st.html(f'<div class="l-dato"><b>Publicación:</b> {publicacion} &nbsp;·&nbsp; <b>Cierre:</b> {cierre}</div>')
+                _fechas_y_trazabilidad(l, con_analisis=bool(an))
                 if an:
-                    st.html(f'<div class="l-nota">{escape(texto_trazabilidad(l))}</div>')
                     with st.expander("Tu evaluación", icon=":material/rate_review:", expanded=evaluacion_desactualizada(l)):
                         _form_evaluacion(base, l, "fav")
 
             with c2:
                 # Gestión operativa persistida en la BD
-                seccion("Gestión")
+                seccion("Preparación")
                 try:
                     checklist = json.loads(l.get('checklist_json') or '{}')
                 except ValueError:
@@ -550,43 +660,48 @@ def pagina_favoritas():
                 with st.form(f"notas_{l['id_externo']}", border=False):
                     valores = {clave: st.checkbox(etiqueta, value=bool(checklist.get(clave)), key=f"chk_{clave}_{l['id_externo']}")
                                for clave, etiqueta in CHECKLIST_ITEMS.items()}
-                    notas = st.text_area("Notas internas:", value=l.get('notas') or '', placeholder="Ej: Costos revisados...",
+                    notas = st.text_area("Notas internas", value=l.get('notas') or '', placeholder="Ej.: costos revisados con proveedor…",
                                          key=f"txt_{l['id_externo']}", height=110)
-                    if st.form_submit_button("Guardar notas", icon=":material/save:", width="stretch"):
+                    if st.form_submit_button("Guardar notas", icon=":material/check:", width="stretch"):
                         base.guardar_notas(l['id_externo'], notas, valores)
-                        st.session_state['ultimo_mensaje'] = ("success", f"Notas de {l['id_externo']} guardadas.")
+                        st.session_state['ultimo_mensaje'] = ("success", "Notas guardadas.")
                         st.rerun()
 
 
 def pagina_archivo():
     base = db()
-    cabecera(base, "Archivo", "Licitaciones descartadas. Puedes restaurarlas en cualquier momento.")
+    cabecera(base, "Archivo", "Licitaciones que descartaste. Puedes restaurarlas cuando quieras.", "archive")
     lista_tarjetas(base, [l for l in base.obtener_licitaciones() if l['estado'] == 'archivada'], "archivadas",
-                   simplificado=True, ocultar_cerradas=False, vacio="El archivo está vacío.")
+                   simplificado=True, ocultar_cerradas=False,
+                   vacio_titulo="El archivo está vacío", vacio_texto="Las licitaciones que archives aparecerán aquí.")
 
 
 def pagina_cola():
     """Licitaciones aún no analizadas (pendientes, extraídas o con error): ninguna queda oculta."""
     base = db()
-    cabecera(base, "Cola de procesamiento",
-             f"Pendientes y extraídas se procesan solas en las próximas sincronizaciones (hasta {config.MAX_INTENTOS} intentos). "
-             "Las que quedan en error requieren «Reintentar».")
+    cabecera(base, "En proceso",
+             "Licitaciones que aún no terminan de analizarse. Se reintentan solas en las próximas sincronizaciones.",
+             "pending_actions")
     lista = [l for l in base.obtener_licitaciones() if l['estado'] in ESTADOS_COLA]
     if not lista:
-        st.info("No hay licitaciones pendientes ni con errores.", icon=":material/task_alt:")
+        vacio("Todo al día", "No hay licitaciones esperando ni con problemas.", "task_alt")
         return
     estados = {
-        'pendiente': ("Pendiente de extracción", "hourglass_top", ""),
-        'extraido': ("Pendiente de análisis IA", "description", "medio"),
-        'error': ("Error: requiere reintento", "error", "bajo"),
+        'pendiente': ("Esperando lectura del portal", "hourglass_top", ""),
+        'extraido': ("Esperando análisis de IA", "neurology", "medio"),
+        'error': ("No se pudo completar", "error", "bajo"),
     }
     for l in lista:
-        texto, icono, nivel = estados.get(l['estado'], (l['estado'], "help", ""))
+        texto, icono, nivel = estados.get(l['estado'], ("En proceso", "help", ""))
         with st.container(border=True, key=f"lcard_cola_{l['id_externo']}"):
             c1, c2 = st.columns([5, 1.25], vertical_alignment="center")
-            chips = [_chip(texto, icono, nivel), _chip(f"{l.get('intentos') or 0} intentos", "replay"),
-                     _chip(etiqueta_cierre(l), "schedule")]
-            error = f'<div class="l-nota" style="margin-top:.5rem">Último error: {escape(l["ultimo_error"])}</div>' if l.get('ultimo_error') else ""
+            chips = [_chip(texto, icono, nivel), _chip(etiqueta_cierre(l), "schedule")]
+            if l['estado'] != 'error' and l.get('intentos'):
+                chips.append(_chip(f"Intento {l['intentos']} de {config.MAX_INTENTOS}", "replay"))
+            error = ""
+            if l.get('ultimo_error'):
+                error = (f'<div class="l-nota" style="margin-top:.55rem">{escape(mensaje_error_amigable(l["ultimo_error"]))}</div>'
+                         + html_detalles_tecnicos([l["ultimo_error"]]))
             c1.html(f'<p class="l-titulo">{escape(titulo_de(l))}</p>'
                     f'<p class="l-org"><span class="l-id">{escape(l["id_externo"])}</span></p>'
                     f'<div class="l-chips">{"".join(chips)}</div>{error}')
@@ -599,7 +714,8 @@ def pagina_cola():
 def pagina_panorama():
     from web import panorama
     base = db()
-    cabecera(base, "Panorama", "Cómo se comporta el radar: filtrado, cierres, riesgo de pago y calidad del score.")
+    cabecera(base, "Panorama", "Cómo funciona tu radar: qué encuentra, qué cierra pronto y qué tan acertada es la IA.",
+             "monitoring")
     panorama.render(base)
     st.write("")
     _exportar(base)
@@ -608,43 +724,45 @@ def pagina_panorama():
 def _exportar(base):
     """Descarga de los datos en formatos independientes del esquema SQLite."""
     with st.container(border=True, key="lcard_exportar"):
-        seccion("Exportar datos")
-        st.caption("Incluye datos de la fuente, análisis de IA (con su trazabilidad) y tus evaluaciones. "
-                   "No incluye notas internas ni checklist.")
+        seccion("Descargar datos")
+        st.caption("Tus oportunidades con su análisis y tus evaluaciones. Las notas internas no se incluyen.")
         exportables = [l for l in base.obtener_licitaciones() if l.get('estado') in ('analizado', 'favorita', 'archivada')]
-        incluir_ficha = st.checkbox("Incluir el texto completo de cada ficha (solo JSON; aumenta mucho el tamaño)", key="exp_ficha")
+        incluir_ficha = st.checkbox("Incluir el texto completo de cada ficha (solo en JSON; el archivo será más pesado)", key="exp_ficha")
         sello = datetime.now().strftime("%Y%m%d-%H%M")
         c1, c2, _ = st.columns([1, 1, 2])
-        c1.download_button("JSON", a_json(exportables, incluir_ficha), file_name=f"licitai-{sello}.json", icon=":material/download:",
-                           mime="application/json", on_click="ignore", width="stretch", disabled=not exportables)
-        c2.download_button("CSV", a_csv(exportables), file_name=f"licitai-{sello}.csv", icon=":material/download:",
+        c1.download_button("Excel (CSV)", a_csv(exportables), file_name=f"licitai-{sello}.csv", icon=":material/table_view:",
                            mime="text/csv", on_click="ignore", width="stretch", disabled=not exportables)
+        c2.download_button("JSON", a_json(exportables, incluir_ficha), file_name=f"licitai-{sello}.json", icon=":material/data_object:",
+                           mime="application/json", on_click="ignore", width="stretch", disabled=not exportables)
         st.caption(f"{len(exportables)} licitaciones con análisis.")
 
 
 def pagina_perfil():
     """Formulario del perfil de negocio."""
     base = db()
-    cabecera(base, "Perfil de negocio", "Define qué buscar en el portal y el contexto que recibe la IA.")
+    cabecera(base, "Perfil de negocio", "Qué buscar en Mercado Público y cómo debe evaluar la IA cada oportunidad.", "tune")
     perfil = base.obtener_perfil() or {}
     with st.container(border=True, key="lcard_perfil"):
         with st.form("perfil_form", border=False):
             c1, c2 = st.columns(2)
             with c1:
-                keywords_pos = st.text_area("Keywords Positivas", perfil.get('keywords_pos') or '', height=120,
-                                            help="Separadas por comas. Basta con que el título contenga una. "
-                                                 "No distingue mayúsculas ni tildes.")
+                keywords_pos = st.text_area("Palabras clave de interés", perfil.get('keywords_pos') or '', height=120,
+                                            placeholder="Ej.: reactivos, microscopio, laboratorio clínico",
+                                            help="Sepáralas con comas. Basta con que el título de la licitación contenga una. "
+                                                 "No importan mayúsculas ni tildes.")
             with c2:
-                keywords_neg = st.text_area("Keywords Negativas", perfil.get('keywords_neg') or '', height=120,
-                                            help="Separadas por comas. Si el título contiene alguna, la licitación se descarta.")
-            bio = st.text_area("Bio Estratégica (Contexto IA)", perfil.get('bio_estrategica') or '', height=160,
-                               help="Qué vende tu empresa y qué oportunidades te interesan. Se entrega a la IA en cada análisis.")
-            if st.form_submit_button("Guardar Cambios", icon=":material/save:", type="primary"):
+                keywords_neg = st.text_area("Palabras a excluir", perfil.get('keywords_neg') or '', height=120,
+                                            placeholder="Ej.: aseo, guardias, uniformes",
+                                            help="Sepáralas con comas. Si el título contiene alguna, la licitación se descarta.")
+            bio = st.text_area("Describe tu empresa", perfil.get('bio_estrategica') or '', height=160,
+                               placeholder="Qué vendes, a quién, en qué te especializas y qué tipo de contratos te interesan.",
+                               help="La IA usa esta descripción para evaluar qué tan conveniente es cada licitación para ti.")
+            if st.form_submit_button("Guardar cambios", icon=":material/check:", type="primary"):
                 # regiones: reservado, sin uso en el filtrado
                 base.guardar_perfil(keywords_pos, keywords_neg, perfil.get('regiones'), bio)
                 cambio = version_perfil(base.obtener_perfil()) != version_perfil(perfil)
                 st.session_state['ultimo_mensaje'] = ("success", "Perfil actualizado." + (
-                    " Los análisis existentes no cambian: revisa abajo cuáles se hicieron con el perfil anterior." if cambio else ""))
+                    " Los análisis que ya tienes no cambian: más abajo puedes actualizarlos." if cambio else ""))
                 st.rerun()
 
     _impacto_perfil(base, base.obtener_perfil())
@@ -660,37 +778,37 @@ def _impacto_perfil(base, perfil):
     fuera = cola_fuera_de_perfil(todas, perfil)
 
     with st.container(border=True, key="lcard_perfil_impacto"):
-        seccion("Impacto del perfil actual")
-        st.caption(f"Versión del perfil: {version}. Cambiar el perfil no modifica los análisis existentes; "
-                   "aquí puedes alinearlos cuando quieras.")
+        seccion("Análisis y perfil actual")
         if not afectados and not fuera:
-            st.html('<div class="l-dato">Todo está alineado con el perfil actual.</div>')
+            st.html('<div class="l-dato">Todos tus análisis están al día con este perfil.</div>')
             return
+        st.caption("Cambiar el perfil no modifica los análisis existentes. Si quieres, puedes actualizarlos aquí.")
 
         if afectados:
-            st.markdown(f"**{len(afectados)}** oportunidades activas se analizaron con un perfil anterior "
-                        "(o antes de registrar el perfil): su score puede no reflejar el perfil actual.")
-            confirmar = st.checkbox(f"Entiendo que esto hará hasta {len(afectados)} llamadas a Gemini", key="conf_reanalisis")
-            if st.button(f"Re-analizar {len(afectados)}", icon=":material/refresh:", disabled=not confirmar,
+            st.markdown(f"**{len(afectados)}** {'oportunidad se analizó' if len(afectados) == 1 else 'oportunidades se analizaron'} "
+                        "con una versión anterior de tu perfil, así que su score podría no reflejar lo que buscas hoy.")
+            confirmar = st.checkbox(f"Entiendo que esto usará hasta {len(afectados)} análisis de IA", key="conf_reanalisis")
+            if st.button(f"Actualizar {len(afectados)} análisis", icon=":material/refresh:", disabled=not confirmar,
                          key="btn_reanalizar_lote"):
                 from main import reanalizar_lote
-                barra = st.progress(0.0, text="Re-analizando…")
+                barra = st.progress(0.0, text="Actualizando análisis…")
                 r = reanalizar_lote(base, [l['id_externo'] for l in afectados],
                                     al_avanzar=lambda hechas, total: barra.progress(hechas / total, text=f"{hechas} de {total}"))
-                texto = f"Re-analizadas {r['reanalizadas']} de {r['total']}."
+                texto = f"Se actualizaron {r['reanalizadas']} de {r['total']} análisis."
                 if r["fallidas"]:
-                    texto += f" {len(r['fallidas'])} fallaron y conservan su análisis anterior."
+                    texto += f" {len(r['fallidas'])} no se pudieron actualizar y mantienen su análisis anterior."
                 if r["detenido_por"]:
-                    texto += f" Detenido: {r['detenido_por']}"
+                    texto += " " + mensaje_error_amigable(r["detenido_por"])
                 nivel = "success" if r["reanalizadas"] == r["total"] else "warning" if r["reanalizadas"] else "error"
                 st.session_state['ultimo_mensaje'] = (nivel, texto)
                 st.rerun()
 
         if fuera:
-            st.markdown(f"**{len(fuera)}** licitaciones en la cola ya no coinciden con tus keywords y se procesarían igual.")
-            if st.button("Quitar de la cola", icon=":material/playlist_remove:", key="btn_quitar_cola",
-                         help="Pasan a estado error con el motivo; puedes reintentarlas desde Cola."):
+            st.markdown(f"**{len(fuera)}** {'licitación en proceso ya no coincide' if len(fuera) == 1 else 'licitaciones en proceso ya no coinciden'} "
+                        "con tus palabras clave y se analizarían igual.")
+            if st.button("Descartarlas", icon=":material/playlist_remove:", key="btn_quitar_cola",
+                         help="Dejan de procesarse. Podrás reintentarlas desde En proceso."):
                 for l in fuera:
                     base.marcar_error(l['id_externo'], "Ya no coincide con las keywords del perfil")
-                st.session_state['ultimo_mensaje'] = ("success", f"{len(fuera)} licitaciones quitadas de la cola.")
+                st.session_state['ultimo_mensaje'] = ("success", f"{len(fuera)} licitaciones descartadas del proceso.")
                 st.rerun()

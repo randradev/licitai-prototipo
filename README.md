@@ -46,9 +46,10 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 | `web/app.py` | Punto de entrada del dashboard: tema, estilos y navegación superior. |
 | `web/paginas/*.py` | Una sección por archivo (Oportunidades, Favoritas, Archivo, Cola, Panorama, Perfil). |
 | `web/vistas.py` | Contenido de cada sección: tarjetas, filtros, formularios y helpers de presentación. |
-| `web/estilos.py` | CSS de tarjetas, insignias y chips, con colores para tema claro y oscuro. |
-| `web/panorama.py` | Visualizaciones: preparación de datos y gráficos Altair. |
-| `.streamlit/config.toml` | Tema de Streamlit: tipografía Inter, colores y bordes. Si no hay internet, se usa la fuente del sistema. |
+| `web/estilos.py` | CSS de la estética «premium oscuro»: tarjetas, KPIs, anillo de score, chips y retoques de los controles. |
+| `web/panorama.py` | Visualizaciones: preparación de datos y gráficos Altair (paleta validada sobre el fondo oscuro). |
+| `web/static/fonts/` | Tipografía Inter incluida en el proyecto (licencia OFL): la interfaz no depende de internet. |
+| `.streamlit/config.toml` | Tema oscuro de Streamlit: fuente, colores, bordes y radios. |
 
 **Estados de una licitación:** `pendiente` (registrada) → `extraido` (texto de la ficha guardado) → `analizado` → `favorita` / `archivada`. `error`: agotó los reintentos o cerró antes de procesarse.
 
