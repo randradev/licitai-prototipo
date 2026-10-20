@@ -8,50 +8,60 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 
 ## ✅ Qué hace
 * **Descubrimiento:** consulta la API de Mercado Público (licitaciones de la fecha indicada, por defecto hoy).
-* **Filtrado:** conserva las licitaciones *Publicadas* y aún abiertas cuyo título contiene alguna keyword positiva y ninguna negativa (sin distinguir mayúsculas ni tildes).
-* **Cola recuperable:** registra todas las licitaciones relevantes y procesa hasta `LICITAI_MAX_PROCESAR` por ejecución. Las restantes y las que fallan se retoman en las siguientes ejecuciones (hasta `LICITAI_MAX_INTENTOS` intentos). Después pasan a *error*, visibles en la pestaña **Pendientes / Errores**, con un botón **Reintentar**.
-* **Datos de la fuente:** el título, el organismo, la fecha de publicación, la región y el **número de reclamos por pago fuera de plazo** se toman literalmente del texto de la ficha. Si un dato no aparece se muestra "No disponible"; nunca se inventa.
-* **Análisis IA:** Gemini devuelve un JSON con un score del 1 al 10, un veredicto, puntos críticos y riesgos. La respuesta se valida antes de guardarse. Si un re-análisis falla, se conserva el análisis anterior.
-* **Gestión:** favoritas, archivadas, re-análisis manual con IA y notas y checklist por favorita guardados en SQLite. Búsqueda y filtros por score, región y cierre, con el tiempo restante para el cierre siempre visible.
-* **Trazabilidad:** cada análisis guarda el modelo, la versión del prompt (`PROMPT_VERSION` en `core/ai_analyst.py`) y su fecha, para comparar análisis hechos con configuraciones distintas.
-* **Tu evaluación:** en cada análisis puedes indicar si el score fue acertado y si postularías. Esas respuestas forman un set de datos con criterio humano para medir la calidad del score.
-* **📊 Panorama:** embudo de filtrado (listado → relevantes → analizadas → favoritas, a partir del registro de cada sincronización), calendario de cierres, oportunidad vs. reclamos de pago, distribución de scores y calibración del score contra tus evaluaciones (se dibuja desde 10 evaluaciones). Cada gráfico muestra su tamaño de muestra y tiene una vista de tabla.
-* **Exportación:** JSON (con la ficha completa opcional) o CSV, separando los datos de la fuente, el análisis de IA y tu evaluación. Las notas internas no se exportan.
+* **Filtrado:** conserva las licitaciones *Publicadas* y aún abiertas cuyo título contiene alguna palabra clave de interés y ninguna palabra a excluir (sin distinguir mayúsculas ni tildes).
+* **Cola recuperable:** registra todas las licitaciones relevantes y procesa hasta `LICITAI_MAX_PROCESAR` por ejecución. Las restantes y las que fallan se retoman en las siguientes sincronizaciones (hasta `LICITAI_MAX_INTENTOS` intentos). Las que no pudieron completarse quedan visibles en la página **En proceso**, con un botón **Reintentar**.
+* **Datos de la fuente:** el título, el organismo, la fecha de publicación, la región y el **número de reclamos por pagos atrasados** se toman literalmente del texto de la ficha. Si un dato no aparece se muestra "No disponible"; nunca se inventa.
+* **Análisis IA:** Gemini (con `temperature=0`) devuelve un JSON con un score del 1 al 10, un veredicto, puntos críticos y riesgos. La respuesta se valida antes de guardarse. Si un nuevo análisis falla, se conserva el anterior.
+* **Trazabilidad:** cada análisis guarda el modelo, la versión del prompt (`PROMPT_VERSION` en `core/ai_analyst.py`), la versión del perfil y su fecha. En la interfaz se ve como «Analizado el …», con los detalles técnicos en un desplegable.
+* **Tu evaluación:** en cada análisis puedes indicar si el score fue acertado y si postularías. Esas respuestas forman un conjunto de datos con criterio humano para medir la calidad del score.
+* **Perfil versionado:** al cambiar las palabras clave o la descripción de la empresa, los análisis existentes no cambian. Se marcan como «Analizada con un perfil anterior» y desde **Perfil** puedes actualizarlos a pedido (con confirmación, porque cada uno usa un análisis de IA) o descartar de la cola las licitaciones que ya no coinciden.
+* **Exportación:** Excel (CSV) o JSON (con la ficha completa opcional), separando los datos de la fuente, el análisis de IA y tu evaluación. Las notas internas no se exportan.
+
+### Páginas
+| Página | Contenido |
+|---|---|
+| **Oportunidades** | Indicadores, búsqueda y filtros (score mínimo, región, orden, ocultar cerradas) y tarjetas con el score, los días al cierre, la región y los reclamos de pago. Cada tarjeta despliega el análisis y tu evaluación. |
+| **Favoritas** | Detalle ampliado y preparación: checklist («Bases leídas», «Anexos preparados») y notas internas. |
+| **Archivo** | Licitaciones descartadas, con opción de restaurarlas. |
+| **En proceso** | Licitaciones que aún no terminan de analizarse y las que no pudieron completarse. |
+| **Panorama** | «De lo publicado a tus oportunidades» (embudo), «Próximos cierres» (días restantes por licitación), score vs. reclamos de pago, distribución de scores y «¿Qué tan acertada es la IA?» (se dibuja desde 10 evaluaciones), además de la descarga de datos. |
+| **Perfil** | Palabras clave de interés, palabras a excluir, descripción de la empresa y alineación de los análisis con el perfil actual. |
 
 ## ⚠️ Qué no hace / limitaciones
 * Solo consulta **una fecha por ejecución**: si no se ejecuta un día, ese listado no se revisa (puedes usar `python main.py --fecha DDMMAAAA`).
-* El filtro mira **solo el título** del listado. El campo de regiones del perfil no se usa: el listado de la API no trae región. La región se muestra después de la extracción.
+* El filtro mira **solo el título** del listado. La región se muestra después de la extracción, pero no se usa para filtrar (el listado de la API no la trae).
 * No lee las bases en PDF; analiza solo el texto visible de la ficha (truncado a `LICITAI_IA_MAX_CHARS`).
+* El score todavía **no tiene una rúbrica explícita** (qué significa cada valor del 1 al 10) y su precisión **aún no está medida**. Ver «Estado y próximos pasos».
 * Depende de la estructura actual del portal (selectores de Selenium) y del SDK `google-generativeai`, que Google ya no mantiene (genera un `FutureWarning`).
-* La sincronización corre dentro de la petición de Streamlit y puede tardar varios minutos. Lo que hagas en la página mientras tanto se aplica al terminar. Solo puede haber una sincronización activa por base de datos: un archivo `<bd>.lock` evita que dos pestañas, o la UI y una tarea programada, procesen lo mismo a la vez.
-* Aunque Gemini se usa con `temperature=0`, el score de una misma ficha puede variar ligeramente entre ejecuciones.
+* La sincronización corre dentro de la petición de Streamlit y puede tardar varios minutos. Lo que hagas en la página mientras tanto se aplica al terminar. Solo puede haber una sincronización activa por base de datos: un archivo `<bd>.lock` evita que dos pestañas del navegador, o la UI y una tarea programada, procesen lo mismo a la vez.
+* Interfaz con tema oscuro único, pensada para escritorio.
 * Single-tenant (un único perfil). No se ha verificado su despliegue en Streamlit Cloud ni en otros servicios.
 
 ---
 
 ## 🛠️ Stack
-* Python **3.11+**, Streamlit, SQLite3, Selenium (Chrome, modo headless por defecto), Google Gemini (`google-generativeai`, modelo configurable con `GEMINI_MODEL`).
+* Python **3.11+**, Streamlit, SQLite3, Altair, Selenium (Chrome, modo headless por defecto), Google Gemini (`google-generativeai`, modelo configurable con `GEMINI_MODEL`).
 
 ## 🏗️ Estructura
 | Archivo | Responsabilidad |
 |---|---|
-| `main.py` | Orquestador del pipeline (CLI y UI). Devuelve un resumen de lo ocurrido. |
+| `main.py` | Orquestador del pipeline (CLI y UI) y re-análisis en lote. Devuelve un resumen de lo ocurrido. |
 | `core/scraper.py` | API de Mercado Público, filtro y extracción con Selenium. |
 | `core/ai_analyst.py` | Prompt, llamada a Gemini y validación de la respuesta. |
-| `core/database_mgr.py` | Persistencia SQLite, ciclo de vida de estados y migración de esquema. |
-| `core/parsing.py` | Funciones puras: keywords, fechas, metadatos de la ficha y validación del JSON. |
-| `core/config.py` | Variables de entorno y constantes (umbrales del score, límites). |
+| `core/database_mgr.py` | Persistencia SQLite, ciclo de vida de estados, evaluaciones, ejecuciones y migración de esquema. |
+| `core/parsing.py` | Funciones puras: palabras clave, fechas, metadatos de la ficha, validación del JSON y versión del perfil. |
+| `core/config.py` | Variables de entorno, constantes (umbrales del score, límites) y logging. |
 | `core/migrar_datos.py` | Corrección única de los datos guardados por versiones anteriores. |
 | `core/exportar.py` | Exportación a JSON y CSV independiente del esquema SQLite. |
 | `web/app.py` | Punto de entrada del dashboard: tema, estilos y navegación superior. |
-| `web/paginas/*.py` | Una sección por archivo (Oportunidades, Favoritas, Archivo, Cola, Panorama, Perfil). |
-| `web/vistas.py` | Contenido de cada sección: tarjetas, filtros, formularios y helpers de presentación. |
+| `web/paginas/*.py` | Una página por archivo (Oportunidades, Favoritas, Archivo, En proceso, Panorama, Perfil). |
+| `web/vistas.py` | Contenido de cada página: tarjetas, filtros, formularios, mensajes para el usuario y helpers de presentación. |
 | `web/estilos.py` | CSS de la estética «premium oscuro»: tarjetas, KPIs, anillo de score, chips y retoques de los controles. |
 | `web/panorama.py` | Visualizaciones: preparación de datos y gráficos Altair (paleta validada sobre el fondo oscuro). |
 | `web/static/fonts/` | Tipografía Inter incluida en el proyecto (licencia OFL): la interfaz no depende de internet. |
 | `.streamlit/config.toml` | Tema oscuro de Streamlit: fuente, colores, bordes y radios. |
 
-**Estados de una licitación:** `pendiente` (registrada) → `extraido` (texto de la ficha guardado) → `analizado` → `favorita` / `archivada`. `error`: agotó los reintentos o cerró antes de procesarse.
+**Estados de una licitación:** `pendiente` (registrada) → `extraido` (texto de la ficha guardado) → `analizado` → `favorita` / `archivada`. `error`: agotó los reintentos, cerró antes de procesarse o se descartó porque ya no coincide con el perfil.
 
 ---
 
@@ -91,8 +101,9 @@ python -m streamlit run web/app.py
 ```
 En Windows también puedes usar `run_app.bat`.
 
-1. Completa el **Perfil de Negocio** en la barra lateral (keywords positivas separadas por comas, keywords negativas y bio) y guarda.
-2. Pulsa **🚀 Buscar y Analizar Hoy**. Al terminar se muestra un resumen con las licitaciones analizadas, las fallidas y las que siguen en cola.
+1. En la página **Perfil**, completa tus palabras clave de interés (separadas por comas), las palabras a excluir y la descripción de tu empresa, y guarda.
+2. Pulsa **Sincronizar ahora** (arriba a la derecha). Al terminar verás cuántas licitaciones nuevas se analizaron y cuántas quedaron en espera.
+3. Revisa las tarjetas en **Oportunidades**, marca favoritas y evalúa los análisis desde «Análisis y evaluación».
 
 **Línea de comandos** (útil para tareas programadas):
 ```bash
@@ -115,6 +126,13 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 Las pruebas son deterministas: usan bases temporales y simulan la API, Selenium y Gemini, así que no consumen cuota ni tocan tu base de datos. La verificación contra los servicios reales se hace manualmente con `python main.py --max 1`.
+
+---
+
+## 🗺️ Estado y próximos pasos
+* **Recopilación de datos en curso:** el prototipo se ejecuta a diario para acumular análisis reales y evaluaciones humanas. Las cifras de calidad del score se publicarán solo cuando la muestra lo permita, indicando siempre su tamaño.
+* **Rúbrica del score (pendiente):** definir qué significa cada valor de idoneidad del 1 al 10 e incorporarlo al prompt (con una nueva `PROMPT_VERSION`).
+* **Versión 2:** está prevista una evolución Full Stack (API, tareas asíncronas, frontend web y análisis de bases PDF). El stack aún no está decidido.
 
 ---
 
