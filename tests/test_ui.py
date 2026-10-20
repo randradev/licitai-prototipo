@@ -195,6 +195,60 @@ def test_evaluacion_incompleta_no_se_guarda(app_db):
     assert app_db.obtener_licitacion("A")["eval_score"] is None
 
 
+def _con_ficha(db, id_ext):
+    conn = sqlite3.connect(db.db_path)
+    conn.execute("UPDATE licitaciones SET descripcion_pro = 'Licitación ID: X ficha' WHERE id_externo = ?", (id_ext,))
+    conn.commit()
+    conn.close()
+
+
+def test_boton_reanalizar_guarda_nuevo_analisis(app_db, monkeypatch):
+    import core.ai_analyst as ai
+    _con_ficha(app_db, "F")
+    llamadas = []
+
+    def analizar_falso(self, id_ext):
+        llamadas.append(id_ext)
+        data = {"score_ia": 4, "veredicto": "nuevo", "puntos_criticos": [], "riesgos": []}
+        self.db.guardar_analisis_ia(id_ext, 4, data, modelo="m", prompt_version="v")
+        return data
+
+    monkeypatch.setenv("GEMINI_API_KEY", "falsa")
+    monkeypatch.setattr(ai.genai, "configure", lambda **kw: None)
+    monkeypatch.setattr(ai.genai, "GenerativeModel", lambda *a, **kw: object())
+    monkeypatch.setattr(ai.AIAnalyst, "analizar_licitacion", analizar_falso)
+    at = _app()
+    _boton(at, "iaf_F").click().run()
+    assert llamadas == ["F"]
+    fila = app_db.obtener_licitacion("F")
+    assert fila["score_ia"] == 4 and fila["estado"] == "favorita" and json.loads(fila["analisis_ia_json"])["veredicto"] == "nuevo"
+    assert any("re-analizada" in s.value for s in at.success)
+
+
+def test_boton_reanalizar_fallido_conserva_anterior(app_db, monkeypatch):
+    import core.ai_analyst as ai
+    _con_ficha(app_db, "F")
+
+    def analizar_roto(self, id_ext):
+        raise ai.AnalisisFallido("Respuesta de IA inválida")
+
+    monkeypatch.setenv("GEMINI_API_KEY", "falsa")
+    monkeypatch.setattr(ai.genai, "configure", lambda **kw: None)
+    monkeypatch.setattr(ai.genai, "GenerativeModel", lambda *a, **kw: object())
+    monkeypatch.setattr(ai.AIAnalyst, "analizar_licitacion", analizar_roto)
+    antes = app_db.obtener_licitacion("F")
+    at = _app()
+    _boton(at, "iaf_F").click().run()
+    despues = app_db.obtener_licitacion("F")
+    assert (despues["score_ia"], despues["analisis_ia_json"]) == (antes["score_ia"], antes["analisis_ia_json"])
+    assert any("se conserva el análisis anterior" in e.value for e in at.error)
+
+
+def test_boton_reanalizar_solo_si_hay_ficha(app_db):
+    at = _app()
+    assert not any(b.key == "iaf_F" for b in at.button)   # Sin texto extraído no hay nada que re-analizar
+
+
 def test_guardar_perfil(app_db):
     at = _app()
     next(ta for ta in at.text_area if ta.label == "Keywords Positivas").input("reactivos, ")
