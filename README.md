@@ -9,7 +9,7 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 ## ✅ Qué hace
 * **Descubrimiento:** consulta la API de Mercado Público (licitaciones de la fecha indicada, por defecto hoy).
 * **Filtrado:** conserva las licitaciones *Publicadas* y aún abiertas cuyo título contiene alguna palabra clave de interés y ninguna palabra a excluir (sin distinguir mayúsculas ni tildes).
-* **Cola recuperable:** registra todas las licitaciones relevantes y procesa hasta `LICITAI_MAX_PROCESAR` por ejecución. Las restantes y las que fallan se retoman en las siguientes sincronizaciones (hasta `LICITAI_MAX_INTENTOS` intentos). Las que no pudieron completarse quedan visibles en la página **En proceso**, con un botón **Reintentar**.
+* **Cola recuperable:** registra todas las licitaciones relevantes y procesa hasta `LICITAI_MAX_PROCESAR` por ejecución. Las restantes y las que fallan se retoman en las siguientes sincronizaciones (hasta `LICITAI_MAX_INTENTOS` intentos). La cola se procesa por **fecha de cierre más próxima** (luego, menos intentos y antigüedad), para no perder oportunidades esperando. En la página **En proceso** puedes **Analizar ahora** cualquier licitación sin esperar a la próxima sincronización (usa 1 análisis de IA), y las que no pudieron completarse tienen además **Reintentar**.
 * **Datos de la fuente:** el título, el organismo, la fecha de publicación, la región y el **número de reclamos por pagos atrasados** se toman literalmente del texto de la ficha. Si un dato no aparece se muestra "No disponible"; nunca se inventa.
 * **Análisis IA con rúbrica:** Gemini (con `temperature=0`) asigna una nota de 0 a 5 a cada criterio de la rúbrica, con su evidencia, y entrega veredicto, puntos críticos y riesgos. **El score de idoneidad (0–100) y su estado los calcula Python**, no el modelo (ver «Score de idoneidad»). La respuesta se valida antes de guardarse. Si un nuevo análisis falla, se conserva el anterior.
 * **Trazabilidad:** cada análisis guarda el modelo, la versión del prompt (`PROMPT_VERSION` en `core/ai_analyst.py`), la versión de la rúbrica (`RUBRICA_VERSION` en `core/rubrica.py`), la versión del perfil y su fecha. Al re-analizar, el análisis anterior (con tu evaluación) se copia a la tabla `analisis_historial`. En la interfaz se ve como «Analizado el …», con los detalles técnicos en un desplegable.
@@ -23,7 +23,7 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 | **Oportunidades** | Indicadores, búsqueda y filtros (score mínimo, región, orden, ocultar cerradas) y tarjetas con el score y su estado, los días al cierre, la región y los reclamos de pago. Cada tarjeta despliega el análisis con el desglose por criterio y tu evaluación. |
 | **Favoritas** | Detalle ampliado y preparación: checklist («Bases leídas», «Anexos preparados») y notas internas. |
 | **Archivo** | Licitaciones descartadas, con opción de restaurarlas. |
-| **En proceso** | Licitaciones que aún no terminan de analizarse y las que no pudieron completarse. |
+| **En proceso** | Licitaciones que aún no terminan de analizarse (en el orden en que se procesarán) y las que no pudieron completarse, con «Analizar ahora» y «Reintentar». |
 | **Panorama** | «De lo publicado a tus oportunidades» (embudo), «Próximos cierres» (días restantes por licitación), score vs. reclamos de pago, distribución de scores y «¿Qué tan acertada es la IA?» (se dibuja desde 10 evaluaciones), además de la descarga de datos. |
 | **Perfil** | Palabras clave de interés, palabras a excluir, descripción de la empresa y alineación de los análisis con el perfil y la rúbrica actuales. |
 
@@ -88,7 +88,8 @@ El score mide **qué tan compatible es una licitación con el perfil de tu empre
 * **v1.1 (desviación de la especificación):** los requisitos obligatorios sin evidencia ya no bloquean la evaluación. En Mercado Público suelen estar en las bases PDF, que el prototipo no lee; con la v1 esas licitaciones quedaban sin score aunque el encaje comercial fuera evidente. Ahora el score queda provisional, con un aviso para revisar las bases.
 * La geografía solo se evalúa si el perfil indica dónde opera o despacha la empresa (la región de la licitación sola no basta).
 * La IA no puede poner nota sin evidencia: una nota con evidencia «ausente» se descarta y queda una advertencia visible. Un 5 sin evidencia suficiente también genera una advertencia.
-* Una respuesta malformada (nota fuera de 0–5, criterio ausente, JSON roto) es un fallo: se reintenta y conserva el análisis anterior.
+* Gemini responde con **salida estructurada** (`response_schema`): claves y estados fijos. Si aun así usa un nombre alternativo conocido (p. ej. `capacity`), se interpreta y se advierte.
+* Una respuesta malformada (nota fuera de 0–5, criterio ausente, JSON roto) es un fallo: se reintenta y conserva el análisis anterior. Su texto crudo queda en la tabla `respuestas_fallidas` (con modelo y versión del prompt) para diagnosticar sin repetir la llamada y medir la tasa de fallos.
 * El **riesgo de pago** (reclamos de la ficha, con su fecha de lectura) y la **urgencia** (fecha de cierre) se muestran aparte y no forman parte del score. Sin dato de la fuente se muestra «Sin datos verificados».
 * **Limitaciones:** pesos y umbrales iniciales, **sin validar** con evaluaciones humanas. Las pruebas automáticas verifican el cálculo y la validación, no la calidad del juicio del modelo.
 

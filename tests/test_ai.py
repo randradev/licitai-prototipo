@@ -309,3 +309,38 @@ def test_analisis_con_clave_traducida_se_persiste(db_extraida):
     AIAnalyst(db_extraida, modelo=ModeloFalso(json.dumps(dict(VALIDO, criterios=crit)))).analizar_licitacion("X")
     fila = db_extraida.obtener_licitacion("X")
     assert fila["estado"] == "analizado" and fila["score_idoneidad"] == 83
+
+
+# --- Respuestas rechazadas (diagnóstico sin repetir la llamada) ---
+
+def test_respuesta_rechazada_se_guarda_cruda(db_extraida):
+    crudo = json.dumps(dict(VALIDO, criterios=criterios(5, 4, 9, 3, 3)))   # Nota fuera de rango
+    with pytest.raises(AnalisisFallido):
+        AIAnalyst(db_extraida, modelo=ModeloFalso(crudo)).analizar_licitacion("X")
+    (r,) = db_extraida.obtener_respuestas_fallidas("X")
+    assert r["respuesta"] == crudo and "capacidad" in r["error"] and r["prompt_version"] == PROMPT_VERSION
+    assert r["modelo"] == config.GEMINI_MODEL and r["fecha"]
+
+
+def test_respuesta_rechazada_se_recorta(db_extraida, monkeypatch):
+    import core.database_mgr as dbm
+    monkeypatch.setattr(dbm, "MAX_RESPUESTA_FALLIDA", 50)
+    with pytest.raises(AnalisisFallido):
+        AIAnalyst(db_extraida, modelo=ModeloFalso("no es json " * 100)).analizar_licitacion("X")
+    assert len(db_extraida.obtener_respuestas_fallidas("X")[0]["respuesta"]) == 50
+
+
+@pytest.mark.parametrize("modelo", [ModeloFalso(error_texto=ValueError("blocked: SAFETY")),
+                                    ModeloFalso(error_llamada=ConnectionError("red"))])
+def test_sin_respuesta_no_se_guarda_nada(db_extraida, modelo):
+    with pytest.raises(AnalisisFallido):
+        AIAnalyst(db_extraida, modelo=modelo).analizar_licitacion("X")
+    assert db_extraida.obtener_respuestas_fallidas() == []
+
+
+def test_fallo_al_guardar_la_respuesta_no_cambia_el_resultado(db_extraida, monkeypatch):
+    def roto(*a, **kw):
+        raise OSError("disco lleno")
+    monkeypatch.setattr(db_extraida, "registrar_respuesta_fallida", roto)
+    with pytest.raises(AnalisisFallido, match="inválida"):
+        AIAnalyst(db_extraida, modelo=ModeloFalso("basura")).analizar_licitacion("X")

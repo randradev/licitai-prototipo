@@ -809,10 +809,12 @@ def pagina_cola():
     cabecera(base, "En proceso",
              "Licitaciones que aún no terminan de analizarse. Se reintentan solas en las próximas sincronizaciones.",
              "pending_actions")
-    lista = [l for l in base.obtener_licitaciones() if l['estado'] in ESTADOS_COLA]
+    lista = orden_cola([l for l in base.obtener_licitaciones() if l['estado'] in ESTADOS_COLA])
     if not lista:
         vacio("Todo al día", "No hay licitaciones esperando ni con problemas.", "task_alt")
         return
+    st.caption("Ordenadas como se procesarán: primero las que cierran antes. "
+               "Usa «Analizar ahora» para no esperar a la próxima sincronización.")
     estados = {
         'pendiente': ("Esperando lectura del portal", "hourglass_top", ""),
         'extraido': ("Esperando análisis de IA", "neurology", "medio"),
@@ -822,7 +824,7 @@ def pagina_cola():
         texto, icono, nivel = estados.get(l['estado'], ("En proceso", "help", ""))
         with st.container(border=True, key=f"lcard_cola_{l['id_externo']}"):
             c1, c2 = st.columns([5, 1.25], vertical_alignment="center")
-            chips = [_chip(texto, icono, nivel), _chip(etiqueta_cierre(l), "schedule")]
+            chips = [_chip(texto, icono, nivel), _chip(etiqueta_cierre(l), "schedule", urgencia_cierre(l))]
             if l['estado'] != 'error' and l.get('intentos'):
                 chips.append(_chip(f"Intento {l['intentos']} de {config.MAX_INTENTOS}", "replay"))
             error = ""
@@ -833,9 +835,52 @@ def pagina_cola():
                     f'<p class="l-org"><span class="l-id">{escape(l["id_externo"])}</span></p>'
                     f'<div class="l-chips">{"".join(chips)}</div>{error}')
             with c2:
+                if st.button("Analizar ahora", icon=":material/bolt:", key=f"now_{l['id_externo']}", width="stretch",
+                             type="primary" if l['estado'] != 'error' else "secondary",
+                             help="La analiza en este momento, sin esperar a la próxima sincronización. Usa 1 análisis "
+                                  "de IA; si la ficha aún no se leyó, primero abre el portal (puede tardar un minuto)."):
+                    _analizar_ahora(base, l['id_externo'])
                 if l['estado'] == 'error':
-                    if st.button("Reintentar", icon=":material/replay:", key=f"retry_{l['id_externo']}", width="stretch"):
+                    if st.button("Reintentar", icon=":material/replay:", key=f"retry_{l['id_externo']}", width="stretch",
+                                 help="La devuelve a la cola para la próxima sincronización."):
                         base.reintentar(l['id_externo']); st.rerun()
+
+
+def orden_cola(lista):
+    """
+    Orden de la página En proceso: el mismo de la cola (cierre más próximo, menos
+    intentos, más antigua) y al final las que no se pudieron completar.
+    """
+    return sorted(lista, key=lambda l: (l['estado'] == 'error', l.get('fecha_cierre') is None,
+                                        l.get('fecha_cierre') or "", l.get('intentos') or 0,
+                                        l.get('fecha_creacion') or "", l['id_externo']))
+
+
+def mensaje_analisis_a_pedido(resultado, motivo, licit=None):
+    """Traducir el resultado de `main.analizar_ahora` a (nivel, mensaje) para el usuario."""
+    if resultado == "analizada":
+        res = rubrica.resultado_guardado(licit or {})
+        return "success", f"Análisis listo: {rubrica.texto_resultado(res)}. Ya está en Oportunidades."
+    if resultado == "fallida":
+        return "error", f"No se pudo completar el análisis. {mensaje_error_amigable(motivo)} Se reintentará en la próxima sincronización."
+    if resultado == "no_disponible":
+        return "info", "Esta licitación ya no está en proceso."
+    clave = {"cuota": "cuota", "sin_navegador": "chrome", "en_curso": "sincronizacion en curso",
+             "sin_configurar": "gemini_api_key", "cerrada": "cerro antes"}.get(resultado, "")
+    return "warning" if resultado == "cerrada" else "error", mensaje_error_amigable(clave or motivo)
+
+
+def _analizar_ahora(base, id_externo):
+    """Ejecutar el análisis a pedido de una licitación de la cola y mostrar el resultado."""
+    from main import analizar_ahora
+    with st.spinner("Analizando la licitación…"):
+        try:
+            resultado, motivo = analizar_ahora(base, id_externo)
+        except Exception:
+            log.exception(f"Error inesperado en el análisis a pedido de {id_externo}")
+            resultado, motivo = "fallida", "error inesperado"
+    st.session_state['ultimo_mensaje'] = mensaje_analisis_a_pedido(resultado, motivo, base.obtener_licitacion(id_externo))
+    st.rerun()
 
 
 def pagina_panorama():

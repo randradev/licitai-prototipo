@@ -203,3 +203,13 @@ def test_cola_prioriza_las_no_intentadas_sobre_los_reintentos(db):
     db.registrar_fallo("VIEJA_FALLIDA", "IA: inválida", 3)   # Tercer fallo: sale de la cola
     assert [l["id_externo"] for l in db.obtener_cola_procesamiento(3)] == ["VIEJA_OK", "NUEVA"]
     assert db.obtener_licitacion("VIEJA_FALLIDA")["estado"] == "error"
+
+
+def test_cola_prioriza_el_cierre_mas_proximo(db):
+    """Primero las que cierran antes; sin fecha de cierre, al final; a igual cierre, menos intentos."""
+    for id_, cierre in (("SIN_FECHA", None), ("LEJOS", "2026-12-01T15:00:00"), ("PRONTO", "2026-10-25T15:00:00"),
+                        ("PRONTO_FALLIDA", "2026-10-25T15:00:00"), ("MEDIO", "2026-11-05T10:00:00")):
+        db.guardar_licitacion({"id_externo": id_, "titulo": id_, "fecha_cierre": cierre})
+    db.registrar_fallo("PRONTO_FALLIDA", "IA: inválida", 3)
+    orden = [l["id_externo"] for l in db.obtener_cola_procesamiento(3)]
+    assert orden == ["PRONTO", "PRONTO_FALLIDA", "MEDIO", "LEJOS", "SIN_FECHA"]

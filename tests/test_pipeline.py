@@ -229,3 +229,81 @@ def test_error_de_chrome_se_convierte_en_driver_no_disponible(db, monkeypatch):
     monkeypatch.setattr(mod, "ChromeDriverManager", ManagerRoto)
     with pytest.raises(DriverNoDisponible):
         LicitacionScraper(db).extraer_detalle_licitacion("X")
+
+
+# --- Análisis a pedido (botón «Analizar ahora» de En proceso) ---
+
+from main import analizar_ahora
+
+
+def _en_cola(db, id_, estado="pendiente", cierre="2099-01-01T10:00:00"):
+    db.guardar_licitacion({"id_externo": id_, "titulo": "Reactivos", "fecha_cierre": cierre})
+    if estado != "pendiente":
+        db.actualizar_detalle_profundo(id_, "http://x", FICHA_EJEMPLO)
+    if estado == "error":
+        db.marcar_error(id_, "IA: inválida")
+
+
+def test_analizar_ahora_pendiente_extrae_y_analiza(db_con_perfil):
+    db = db_con_perfil
+    _en_cola(db, "P")
+    scraper, analista = ScraperFalso(db), AnalistaFalso(db)
+    assert analizar_ahora(db, "P", scraper=scraper, analyst=analista, ahora=AHORA) == ("analizada", None)
+    assert scraper.extraidas == ["P"] and analista.analizadas == ["P"]
+    assert db.obtener_licitacion("P")["estado"] == "analizado"
+
+
+def test_analizar_ahora_extraida_no_abre_el_portal(db_con_perfil):
+    db = db_con_perfil
+    _en_cola(db, "E", "extraido")
+    analista = AnalistaFalso(db)
+    assert analizar_ahora(db, "E", analyst=analista, ahora=AHORA)[0] == "analizada"   # Sin scraper: no se necesita
+
+
+def test_analizar_ahora_recupera_una_en_error(db_con_perfil):
+    db = db_con_perfil
+    _en_cola(db, "ERR", "error")
+    assert analizar_ahora(db, "ERR", analyst=AnalistaFalso(db), ahora=AHORA)[0] == "analizada"
+    assert db.obtener_licitacion("ERR")["estado"] == "analizado"
+
+
+def test_analizar_ahora_fallo_consume_un_intento_y_queda_en_cola(db_con_perfil):
+    db = db_con_perfil
+    _en_cola(db, "F", "extraido")
+    resultado, motivo = analizar_ahora(db, "F", analyst=AnalistaFalso(db, fallan={"F"}), ahora=AHORA)
+    assert resultado == "fallida" and motivo.startswith("IA:")
+    fila = db.obtener_licitacion("F")
+    assert fila["estado"] == "extraido" and fila["intentos"] == 1
+
+
+def test_analizar_ahora_cuota_no_consume_intentos(db_con_perfil):
+    db = db_con_perfil
+    _en_cola(db, "Q", "extraido")
+    assert analizar_ahora(db, "Q", analyst=AnalistaFalso(db, cuota_en="Q"), ahora=AHORA)[0] == "cuota"
+    assert db.obtener_licitacion("Q")["intentos"] == 0
+
+
+def test_analizar_ahora_cerrada_o_ya_analizada(db_con_perfil):
+    db = db_con_perfil
+    _en_cola(db, "C", "extraido", cierre="2026-02-01T10:00:00")
+    assert analizar_ahora(db, "C", analyst=AnalistaFalso(db), ahora=AHORA)[0] == "cerrada"
+    assert db.obtener_licitacion("C")["estado"] == "error"
+    _en_cola(db, "OK", "extraido")
+    analizar_ahora(db, "OK", analyst=AnalistaFalso(db), ahora=AHORA)
+    assert analizar_ahora(db, "OK", analyst=AnalistaFalso(db), ahora=AHORA)[0] == "no_disponible"
+    assert analizar_ahora(db, "NO_EXISTE", analyst=AnalistaFalso(db), ahora=AHORA)[0] == "no_disponible"
+
+
+def test_analizar_ahora_respeta_la_sincronizacion_en_curso(db_con_perfil):
+    db = db_con_perfil
+    _en_cola(db, "B", "extraido")
+    open(db.db_path + ".lock", "w").close()
+    analista = AnalistaFalso(db)
+    assert analizar_ahora(db, "B", analyst=analista, ahora=AHORA)[0] == "en_curso" and analista.analizadas == []
+
+
+def test_analizar_ahora_sin_navegador_no_consume_intentos(db_con_perfil):
+    db = db_con_perfil
+    _en_cola(db, "N")
+    r = analizar_ahora(db, "N", scraper=ScraperFalso(db, driver_roto=True), analyst=AnalistaFalso(db), ahora=AHORA)
+    assert r[0] == "sin_navegador" and db.obtener_licitacion("N")["intentos"] == 0

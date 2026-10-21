@@ -66,7 +66,9 @@ COLUMNAS_HISTORIAL = {
     "eval_score": "TEXT", "eval_postularia": "TEXT", "eval_comentario": "TEXT", "eval_fecha": "TEXT",
 }
 
-EVAL_SCORE_OPCIONES = ("acertado", "muy_alto", "muy_bajo")
+MAX_RESPUESTA_FALLIDA = 20000   # Caracteres guardados de una respuesta de IA rechazada
+
+EVAL_SCORE_OPCIONES =("acertado", "muy_alto", "muy_bajo")
 EVAL_POSTULARIA_OPCIONES = ("si", "tal_vez", "no")
 
 
@@ -183,6 +185,20 @@ class DatabaseManager:
                     id_externo TEXT NOT NULL,
                     reemplazado TEXT,            -- Momento en que se reemplazó (ISO, hora local)
                     {columnas}
+                )
+            """)
+            # ENTIDAD 5: RESPUESTAS DE IA RECHAZADAS
+            # Texto crudo de cada respuesta que no pasó la validación (solo inserción):
+            # permite diagnosticar sin repetir la llamada y medir la tasa de fallos por versión del prompt.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS respuestas_fallidas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id_externo TEXT NOT NULL,
+                    fecha TEXT,                  -- ISO, hora local
+                    modelo TEXT,
+                    prompt_version TEXT,
+                    error TEXT,                  -- Motivo del rechazo
+                    respuesta TEXT               -- Texto crudo (recortado a MAX_RESPUESTA_FALLIDA)
                 )
             """)
             self._migrar_esquema(conn)
@@ -319,15 +335,16 @@ class DatabaseManager:
         Recuperar las licitaciones pendientes de extracción o análisis que aún
         tienen reintentos disponibles.
 
-        Primero las que fallaron menos veces y, a igual número de intentos, de la
-        más antigua a la más reciente: un reintento nunca ocupa el cupo de una
-        licitación que aún no se ha intentado.
+        Orden: primero las que cierran antes (para no perder oportunidades
+        esperando en la cola; sin fecha de cierre, al final); a igual cierre, las
+        que fallaron menos veces; luego de la más antigua a la más reciente.
+        `fecha_cierre` se guarda en ISO, así que se ordena como texto.
         """
         query = f"""
             SELECT * FROM licitaciones
             WHERE estado IN ({', '.join('?' * len(ESTADOS_EN_COLA))})
               AND COALESCE(intentos, 0) < ?
-            ORDER BY COALESCE(intentos, 0) ASC, fecha_creacion ASC, id_externo ASC
+            ORDER BY fecha_cierre IS NULL, fecha_cierre ASC, COALESCE(intentos, 0) ASC, fecha_creacion ASC, id_externo ASC
         """
         with self._get_connection() as conn:
             rows = conn.execute(query, (*ESTADOS_EN_COLA, max_intentos)).fetchall()
@@ -437,6 +454,27 @@ class DatabaseManager:
                                  rubrica.get("score"), rubrica.get("estado"), rubrica.get("cobertura"),
                                  rubrica.get("version"), id_externo))
             conn.commit()
+
+    def registrar_respuesta_fallida(self, id_externo, error, respuesta, modelo=None, prompt_version=None):
+        """Guardar el texto crudo de una respuesta de IA rechazada por la validación."""
+        query = """
+            INSERT INTO respuestas_fallidas (id_externo, fecha, modelo, prompt_version, error, respuesta)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """
+        with self._get_connection() as conn:
+            conn.execute(query, (id_externo, _ahora_iso(), modelo, prompt_version, str(error)[:500],
+                                 (respuesta or "")[:MAX_RESPUESTA_FALLIDA]))
+            conn.commit()
+
+    def obtener_respuestas_fallidas(self, id_externo=None):
+        """Respuestas rechazadas (todas o de una licitación), de la más reciente a la más antigua."""
+        query = "SELECT * FROM respuestas_fallidas"
+        params = ()
+        if id_externo:
+            query += " WHERE id_externo = ?"
+            params = (id_externo,)
+        with self._get_connection() as conn:
+            return [dict(r) for r in conn.execute(query + " ORDER BY id DESC", params).fetchall()]
 
     def obtener_historial(self, id_externo):
         """Análisis anteriores de una licitación, del más reciente al más antiguo."""

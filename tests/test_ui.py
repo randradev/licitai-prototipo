@@ -445,3 +445,46 @@ def test_panorama_con_ejecuciones_y_evaluaciones(app_db):
     assert "De lo publicado a tus oportunidades" in textos and "acertada es la IA" in textos
     assert not any("Evalúa al menos" in i.value for i in at.info)
     assert {b.label for b in at.get("download_button")} >= {"JSON", "Excel (CSV)"}
+
+
+# --- En proceso: orden y análisis a pedido ---
+
+def test_orden_cola_sigue_el_de_la_sincronizacion():
+    lista = [{"id_externo": "ERR", "estado": "error", "fecha_cierre": "2026-10-22T10:00:00"},
+             {"id_externo": "SIN", "estado": "pendiente", "fecha_cierre": None},
+             {"id_externo": "LEJOS", "estado": "extraido", "fecha_cierre": "2026-12-01T10:00:00"},
+             {"id_externo": "PRONTO", "estado": "pendiente", "fecha_cierre": "2026-10-25T10:00:00"}]
+    assert _ids(helpers.orden_cola(lista)) == ["PRONTO", "LEJOS", "SIN", "ERR"]
+
+
+@pytest.mark.parametrize("resultado, motivo, nivel, texto", [
+    ("analizada", None, "success", "83/100"),
+    ("fallida", "IA: Respuesta de IA inválida", "error", "no entregó un análisis válido"),
+    ("cuota", "Cuota de Gemini agotada: 429", "error", "límite de uso"),
+    ("en_curso", "Ya hay una sincronización en curso", "error", "en curso"),
+    ("sin_navegador", "No se pudo iniciar Chrome", "error", "Google Chrome"),
+    ("cerrada", "La licitación cerró antes", "warning", "cerró antes"),
+    ("no_disponible", "x", "info", "ya no está en proceso"),
+])
+def test_mensaje_analisis_a_pedido(resultado, motivo, nivel, texto):
+    licit = {"rubrica_version": "v1.1", "score_estado": "definitivo", "score_idoneidad": 83}
+    n, m = helpers.mensaje_analisis_a_pedido(resultado, motivo, licit)
+    assert n == nivel and texto in m and "429" not in m
+
+
+def test_boton_analizar_ahora_en_proceso(app_db, monkeypatch):
+    import main
+    llamadas = []
+
+    def analizar_falso(db, id_ext, **kw):
+        llamadas.append(id_ext)
+        db.guardar_analisis_ia(id_ext, None, {"veredicto": "a pedido"},
+                               rubrica={"version": "v1.1", "estado": "definitivo", "score": 88, "cobertura": 100})
+        return "analizada", None
+
+    monkeypatch.setattr(main, "analizar_ahora", analizar_falso)
+    at = _app("cola")
+    assert not at.exception and any("Ordenadas como se procesarán" in c.value for c in at.caption)
+    _boton(at, "now_E").click().run()
+    assert llamadas == ["E"] and app_db.obtener_licitacion("E")["estado"] == "analizado"
+    assert any("88/100" in s.value for s in at.success)

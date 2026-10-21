@@ -195,73 +195,19 @@ def _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ah
     # FASE 3: EXTRACCIÓN Y ANÁLISIS IA
     # -------------------------------------------------------
     for idx, licit in enumerate(lote):
-        id_ext = licit['id_externo']
-        log.info(f"\n--- Procesando ({idx + 1}/{len(lote)}): {id_ext} ---")
+        log.info(f"\n--- Procesando ({idx + 1}/{len(lote)}): {licit['id_externo']} ---")
+        resultado, motivo = procesar_licitacion(db, scraper, analyst, licit, max_intentos)
 
-        # ---------------------------------
-        # A. EXTRACCIÓN PROFUNDA (SELENIUM) — se omite si ya hay texto extraído
-        # ---------------------------------
-        if licit['estado'] == 'pendiente':
-            try:
-                detalle = scraper.extraer_detalle_licitacion(id_ext)
-            except DriverNoDisponible as e:
-                # Problema del entorno, no de la licitación: no consume intentos
-                resumen["detenido_por"] = str(e)
-                log.error(f"❌ {e}")
-                break
-
-            resumen["intentadas"] += 1
-            if detalle.get('error') or not detalle.get('descripcion_pro'):
-                motivo = detalle.get('error') or "Extracción sin contenido"
-                estado = db.registrar_fallo(id_ext, f"Extracción: {motivo}", max_intentos)
-                resumen["fallidas"] += 1
-                log.warning(f"❌ Falló la extracción técnica para {id_ext}: {motivo} (estado: {estado})")
-                if pausa and idx < len(lote) - 1:
-                    time.sleep(pausa)
-                continue
-
-            # Datos maestros tomados literalmente de la ficha técnica
-            db.actualizar_datos_maestros(
-                id_ext,
-                titulo=detalle.get('titulo'),
-                organismo=detalle.get('organismo'),
-                fecha_pub=detalle.get('fecha_publicacion'),
-                reclamos_pago_n=detalle.get('reclamos_pago_n'),
-                region=detalle.get('region'),
-            )
-            # Persistencia del corpus textual para su posterior procesamiento por LLM
-            db.actualizar_detalle_profundo(id_ext, detalle.get('link'), detalle['descripcion_pro'])
-            log.info("🔍 Extracción web completada.")
-        else:
-            resumen["intentadas"] += 1
-
-        # ---------------------------------
-        # B. ANÁLISIS ESTRATÉGICO (GEMINI)
-        # ---------------------------------
-        log.info("🧠 Consultando a la IA...")
-        try:
-            analis = analyst.analizar_licitacion(id_ext)
-        except CuotaAgotada as e:
-            # La licitación queda 'extraido' y se reintenta en la próxima ejecución
-            resumen["detenido_por"] = str(e)
-            log.error(f"⛔ {e}")
+        if resultado == SIN_NAVEGADOR:
+            # Problema del entorno, no de la licitación: no consume intentos
+            resumen["detenido_por"] = motivo
             break
-        except AnalisisFallido as e:
-            estado = db.registrar_fallo(id_ext, f"IA: {e}", max_intentos)
-            resumen["fallidas"] += 1
-            log.warning(f"⚠️ La IA no pudo procesar esta licitación: {e} (estado: {estado})")
-        else:
-            resumen["analizadas"] += 1
-            res = rubrica.resultado_guardado(db.obtener_licitacion(id_ext) or {})
-            log.info(f"🎯 ANÁLISIS COMPLETADO - SCORE: {rubrica.texto_resultado(res)}")
-            if (analis.get('rubrica') or {}).get('motivo'):
-                log.info(f"ℹ️ {analis['rubrica']['motivo']}")
-            log.info(f"📝 VEREDICTO: {analis.get('veredicto')}")
-            for p in analis.get('puntos_criticos', []): log.info(f"   • {p}")
-            log.info("⚠️ RIESGOS:")
-            for r in analis.get('riesgos', []): log.info(f"   • {r}")
-            if res["estado"] == rubrica.NO_ELEGIBLE or (res["valor"] is not None and res["valor"] < rubrica.UMBRAL_DESCARTE):
-                log.info(f"📂 MOTIVO DE ARCHIVO: {analis.get('motivo_archivo')}")
+        resumen["intentadas"] += 1
+        if resultado == CUOTA:
+            # La licitación queda 'extraido' y se reintenta en la próxima ejecución
+            resumen["detenido_por"] = motivo
+            break
+        resumen["analizadas" if resultado == ANALIZADA else "fallidas"] += 1
 
         # Gestión de estabilidad: Evitar bloqueos por parte del servidor destino (Mercado Público)
         if pausa and idx < len(lote) - 1:
@@ -276,6 +222,111 @@ def _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ah
             f"{'✅' if nivel == 'success' else 'ℹ️' if nivel == 'info' else '⚠️'} {mensaje}")
     log.info("=" * 50)
     return resumen
+
+
+# Resultados de procesar una licitación
+ANALIZADA, FALLIDA, CUOTA, SIN_NAVEGADOR = "analizada", "fallida", "cuota", "sin_navegador"
+
+
+def procesar_licitacion(db, scraper, analyst, licit, max_intentos):
+    """
+    Extraer la ficha (si aún no se leyó) y analizar una licitación de la cola.
+
+    Lo usan la sincronización y el botón «Analizar ahora», para que ambos
+    sigan exactamente las mismas reglas (fallos, reintentos, datos de la ficha).
+
+    Returns:
+        tuple: (resultado, motivo). resultado es ANALIZADA, FALLIDA (consume un
+               intento), CUOTA o SIN_NAVEGADOR (problemas del entorno: no consumen intentos).
+    """
+    id_ext = licit['id_externo']
+
+    # A. EXTRACCIÓN PROFUNDA (SELENIUM) — se omite si ya hay texto extraído
+    if licit['estado'] == 'pendiente':
+        try:
+            detalle = scraper.extraer_detalle_licitacion(id_ext)
+        except DriverNoDisponible as e:
+            log.error(f"❌ {e}")
+            return SIN_NAVEGADOR, str(e)
+
+        if detalle.get('error') or not detalle.get('descripcion_pro'):
+            motivo = detalle.get('error') or "Extracción sin contenido"
+            estado = db.registrar_fallo(id_ext, f"Extracción: {motivo}", max_intentos)
+            log.warning(f"❌ Falló la extracción técnica para {id_ext}: {motivo} (estado: {estado})")
+            return FALLIDA, f"Extracción: {motivo}"
+
+        # Datos maestros tomados literalmente de la ficha técnica
+        db.actualizar_datos_maestros(
+            id_ext,
+            titulo=detalle.get('titulo'),
+            organismo=detalle.get('organismo'),
+            fecha_pub=detalle.get('fecha_publicacion'),
+            reclamos_pago_n=detalle.get('reclamos_pago_n'),
+            region=detalle.get('region'),
+        )
+        # Persistencia del corpus textual para su posterior procesamiento por LLM
+        db.actualizar_detalle_profundo(id_ext, detalle.get('link'), detalle['descripcion_pro'])
+        log.info("🔍 Extracción web completada.")
+
+    # B. ANÁLISIS ESTRATÉGICO (GEMINI)
+    log.info("🧠 Consultando a la IA...")
+    try:
+        analis = analyst.analizar_licitacion(id_ext)
+    except CuotaAgotada as e:
+        log.error(f"⛔ {e}")
+        return CUOTA, str(e)
+    except AnalisisFallido as e:
+        estado = db.registrar_fallo(id_ext, f"IA: {e}", max_intentos)
+        log.warning(f"⚠️ La IA no pudo procesar esta licitación: {e} (estado: {estado})")
+        return FALLIDA, f"IA: {e}"
+
+    res = rubrica.resultado_guardado(db.obtener_licitacion(id_ext) or {})
+    log.info(f"🎯 ANÁLISIS COMPLETADO - SCORE: {rubrica.texto_resultado(res)}")
+    if (analis.get('rubrica') or {}).get('motivo'):
+        log.info(f"ℹ️ {analis['rubrica']['motivo']}")
+    log.info(f"📝 VEREDICTO: {analis.get('veredicto')}")
+    for p in analis.get('puntos_criticos', []): log.info(f"   • {p}")
+    log.info("⚠️ RIESGOS:")
+    for r in analis.get('riesgos', []): log.info(f"   • {r}")
+    if res["estado"] == rubrica.NO_ELEGIBLE or (res["valor"] is not None and res["valor"] < rubrica.UMBRAL_DESCARTE):
+        log.info(f"📂 MOTIVO DE ARCHIVO: {analis.get('motivo_archivo')}")
+    return ANALIZADA, None
+
+
+def analizar_ahora(db, id_externo, scraper=None, analyst=None, max_intentos=None, ahora=None):
+    """
+    Procesar de inmediato una licitación de la cola (botón «Analizar ahora» de En proceso).
+
+    Usa el mismo bloqueo que la sincronización, así que nunca corren a la vez.
+    Una licitación en 'error' se devuelve antes a la cola (con sus intentos
+    reiniciados, como «Reintentar»): pedirla a mano es una decisión explícita.
+
+    Returns:
+        tuple: (resultado, motivo). Además de los de `procesar_licitacion`:
+               "cerrada", "no_disponible", "en_curso" o "sin_configurar".
+    """
+    config.configurar_logging()
+    max_intentos = config.MAX_INTENTOS if max_intentos is None else max_intentos
+    try:
+        with bloqueo_pipeline(db.db_path):
+            licit = db.obtener_licitacion(id_externo)
+            if not licit or licit['estado'] not in ('pendiente', 'extraido', 'error'):
+                return "no_disponible", "La licitación ya no está en proceso."
+            if esta_cerrada(licit.get('fecha_cierre'), ahora):
+                db.marcar_error(id_externo, "La licitación cerró antes de poder procesarse")
+                return "cerrada", "La licitación cerró antes de poder procesarse"
+            if licit['estado'] == 'error':
+                db.reintentar(id_externo)
+                licit = db.obtener_licitacion(id_externo)
+            log.info(f"\n--- Análisis a pedido: {id_externo} ---")
+            analyst = analyst or AIAnalyst(db)
+            if licit['estado'] == 'pendiente':
+                scraper = scraper or LicitacionScraper(db)
+            return procesar_licitacion(db, scraper, analyst, licit, max_intentos)
+    except PipelineEnCurso as e:
+        return "en_curso", str(e)
+    except ValueError as e:   # Falta GEMINI_API_KEY
+        return "sin_configurar", str(e)
 
 
 def reanalizar_lote(db, ids, analyst=None, al_avanzar=None):

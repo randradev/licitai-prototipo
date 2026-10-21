@@ -12,11 +12,14 @@ Responsabilidades:
 4. Completar datos faltantes (solo huecos) con la inferencia del modelo.
 """
 
+import logging
 import os
 import google.generativeai as genai
 
 from core import config, rubrica
 from core.parsing import es_valor_util, parsear_respuesta_ia, validar_analisis, version_perfil
+
+log = logging.getLogger("licitai.ia")
 
 try:
     from google.api_core.exceptions import ResourceExhausted
@@ -232,6 +235,14 @@ class AIAnalyst:
         No inventes datos que no estén en el corpus.
         """
 
+    def _guardar_respuesta_fallida(self, id_externo, error, texto):
+        """Guardar la respuesta rechazada para diagnóstico; si no se puede, el análisis sigue su curso."""
+        try:
+            self.db.registrar_respuesta_fallida(id_externo, error, texto, modelo=self.nombre_modelo,
+                                                prompt_version=PROMPT_VERSION)
+        except Exception:
+            log.exception(f"No se pudo guardar la respuesta rechazada de {id_externo}")
+
     def analizar_licitacion(self, id_externo):
         """
         Ejecutar el pipeline completo de análisis para una licitación.
@@ -286,6 +297,7 @@ class AIAnalyst:
             try:
                 data_ia = validar_analisis(parsear_respuesta_ia(texto))
             except ValueError as e:
+                self._guardar_respuesta_fallida(id_externo, e, texto)
                 raise AnalisisFallido(f"Respuesta de IA inválida: {e}") from e
             modelo = self.nombre_modelo
 
