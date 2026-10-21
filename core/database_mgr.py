@@ -317,13 +317,17 @@ class DatabaseManager:
     def obtener_cola_procesamiento(self, max_intentos):
         """
         Recuperar las licitaciones pendientes de extracción o análisis que aún
-        tienen reintentos disponibles, de la más antigua a la más reciente.
+        tienen reintentos disponibles.
+
+        Primero las que fallaron menos veces y, a igual número de intentos, de la
+        más antigua a la más reciente: un reintento nunca ocupa el cupo de una
+        licitación que aún no se ha intentado.
         """
         query = f"""
             SELECT * FROM licitaciones
             WHERE estado IN ({', '.join('?' * len(ESTADOS_EN_COLA))})
               AND COALESCE(intentos, 0) < ?
-            ORDER BY fecha_creacion ASC, id_externo ASC
+            ORDER BY COALESCE(intentos, 0) ASC, fecha_creacion ASC, id_externo ASC
         """
         with self._get_connection() as conn:
             rows = conn.execute(query, (*ESTADOS_EN_COLA, max_intentos)).fetchall()

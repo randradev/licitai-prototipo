@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - dependencia transitiva de google-gener
 # Versión del prompt y de la configuración de generación. Se guarda con cada
 # análisis: cámbiala siempre que modifiques `construir_prompt` o los parámetros
 # del modelo, para poder comparar análisis hechos con versiones distintas.
-PROMPT_VERSION = "2026-10-21.2"
+PROMPT_VERSION = "2026-10-21.3"
 
 # Qué evalúa cada criterio de la rúbrica (texto para el prompt)
 CRITERIOS_DESCRIPCION = {
@@ -38,6 +38,49 @@ CRITERIOS_DESCRIPCION = {
     "geografia": "capacidad para entregar o prestar el servicio en la ubicación requerida",
     "economica": "compatibilidad aparente con presupuesto, costes y condiciones contractuales disponibles",
 }
+
+
+def esquema_respuesta():
+    """
+    Esquema JSON de la respuesta (salida estructurada de Gemini).
+
+    Fija las claves exactas y los valores permitidos de cada estado: sin él, el
+    modelo a veces traducía claves (p. ej. "capacity" en vez de "capacidad") y
+    la respuesta se rechazaba. Las claves de los criterios salen de core/rubrica.py.
+    """
+    texto = {"type": "string", "nullable": True}
+    lista = {"type": "array", "items": {"type": "string"}}
+
+    def objeto(propiedades):
+        return {"type": "object", "properties": propiedades, "required": list(propiedades)}
+
+    criterio = objeto({
+        "nota": {"type": "integer", "nullable": True},
+        "evidencia_estado": {"type": "string", "format": "enum", "enum": list(rubrica.EVIDENCIA_ESTADOS)},
+        "evidencia": texto,
+        "explicacion": texto,
+    })
+    excluyente = objeto({
+        "requisito": {"type": "string"},
+        "estado": {"type": "string", "format": "enum", "enum": list(rubrica.EXCLUYENTE_ESTADOS)},
+        "evidencia": texto,
+    })
+    return objeto({
+        "titulo_recuperado": texto,
+        "organismo_recuperado": texto,
+        "comportamiento_pago": texto,
+        "objeto_principal": texto,
+        "criterios": objeto({c.clave: criterio for c in rubrica.CRITERIOS}),
+        "requisitos_obligatorios": lista,
+        "requisitos_excluyentes": {"type": "array", "items": excluyente},
+        "datos_faltantes": lista,
+        "hechos_fuente": lista,
+        "inferencias": lista,
+        "veredicto": {"type": "string"},
+        "puntos_criticos": lista,
+        "riesgos": lista,
+        "motivo_archivo": texto,
+    })
 
 
 def corpus_truncado(licit):
@@ -100,11 +143,12 @@ class AIAnalyst:
             raise ValueError("❌ Error Crítico: No se encontró GEMINI_API_KEY en las variables de entorno.")
 
         genai.configure(api_key=api_key)
-        # Modelo configurable vía GEMINI_MODEL; salida JSON nativa y temperatura 0
+        # Modelo configurable vía GEMINI_MODEL; salida JSON estructurada (esquema fijo) y temperatura 0
         self.model = genai.GenerativeModel(
             config.GEMINI_MODEL,
             generation_config={
                 "response_mime_type": "application/json",
+                "response_schema": esquema_respuesta(),
                 "temperature": config.GEMINI_TEMPERATURE,
             },
         )

@@ -296,6 +296,42 @@ def _a_opcion(valor, opciones, campo):
     return texto
 
 
+# Nombres alternativos que el modelo ha usado (o podría usar) para las claves:
+# traducciones al inglés y variantes con tildes o con el nombre largo.
+ALIAS_CRITERIOS = {
+    "commercial": "comercial", "compatibilidad_comercial": "comercial",
+    "requirements": "requisitos", "requisitos_obligatorios": "requisitos",
+    "capacity": "capacidad", "capacidad_de_cumplimiento": "capacidad",
+    "geography": "geografia", "viabilidad_geografica": "geografia", "viabilidad_geografica_y_logistica": "geografia",
+    "economic": "economica", "viabilidad_economica": "economica", "viabilidad_economica_y_contractual": "economica",
+}
+ALIAS_CAMPOS_CRITERIO = {
+    "estado_evidencia": "evidencia_estado", "evidence_status": "evidencia_estado", "evidence_state": "evidencia_estado",
+    "note": "nota", "score": "nota", "grade": "nota",
+    "evidence": "evidencia", "explanation": "explicacion",
+}
+
+
+def _clave(texto):
+    """Clave comparable: sin tildes, minúsculas y con guiones bajos ('Geografía' -> 'geografia')."""
+    return re.sub(r"[\s-]+", "_", normalizar_texto(texto))
+
+
+def _con_alias(objeto, alias, canonicas, advertencias, contexto=""):
+    """
+    Renombrar las claves alternativas a su nombre canónico (solo si la canónica no viene)
+    y dejar constancia en `advertencias`. Así un nombre traducido no descarta un análisis válido.
+    """
+    resultado = dict(objeto)
+    for original in list(objeto):
+        canonica = _clave(original)
+        canonica = canonica if canonica in canonicas else alias.get(canonica)
+        if canonica and canonica != original and canonica not in objeto:
+            resultado[canonica] = resultado.pop(original)
+            advertencias.append(f"La IA usó la clave «{original}»{contexto}; se interpretó como «{canonica}»")
+    return resultado
+
+
 def _validar_criterios(valor, advertencias):
     """
     Validar las notas por criterio de la rúbrica.
@@ -305,9 +341,13 @@ def _validar_criterios(valor, advertencias):
     """
     if not isinstance(valor, dict):
         raise ValueError("criterios ausente o no es un objeto")
+    valor = _con_alias(valor, ALIAS_CRITERIOS, {c.clave for c in rubrica.CRITERIOS}, advertencias)
     criterios = {}
     for c in rubrica.CRITERIOS:
         item = valor.get(c.clave)
+        if isinstance(item, dict):
+            item = _con_alias(item, ALIAS_CAMPOS_CRITERIO, {"nota", "evidencia_estado", "evidencia", "explicacion"},
+                              advertencias, f" en {c.clave}")
         if not isinstance(item, dict):
             raise ValueError(f"criterio ausente o inválido: {c.clave}")
         nota = _a_nota(item.get("nota"), f"nota de {c.clave}")

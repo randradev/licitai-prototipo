@@ -24,7 +24,26 @@ def test_modelo_se_crea_con_json_y_temperatura_cero(db, monkeypatch):
                         lambda nombre, generation_config: capturado.update(nombre=nombre, gc=generation_config))
     AIAnalyst(db)
     assert capturado["nombre"] == config.GEMINI_MODEL
-    assert capturado["gc"] == {"response_mime_type": "application/json", "temperature": 0.0}
+    assert capturado["gc"] == {"response_mime_type": "application/json", "response_schema": ai_mod.esquema_respuesta(),
+                               "temperature": 0.0}
+
+
+def test_esquema_fija_las_claves_de_la_rubrica():
+    """La salida estructurada impide claves traducidas (p. ej. 'capacity') y estados fuera de lista."""
+    from core import rubrica
+    from google.generativeai.types import generation_types
+    esquema = ai_mod.esquema_respuesta()
+    criterios = esquema["properties"]["criterios"]
+    assert criterios["required"] == [c.clave for c in rubrica.CRITERIOS]
+    capacidad = criterios["properties"]["capacidad"]
+    assert capacidad["required"] == ["nota", "evidencia_estado", "evidencia", "explicacion"]
+    assert capacidad["properties"]["nota"] == {"type": "integer", "nullable": True}
+    assert capacidad["properties"]["evidencia_estado"]["enum"] == list(rubrica.EVIDENCIA_ESTADOS)
+    estado = esquema["properties"]["requisitos_excluyentes"]["items"]["properties"]["estado"]
+    assert estado["enum"] == list(rubrica.EXCLUYENTE_ESTADOS)
+    assert "score_ia" not in esquema["properties"]   # El modelo no entrega el total
+    # El SDK lo acepta y lo convierte a su formato (sin red)
+    generation_types.to_generation_config_dict({"response_mime_type": "application/json", "response_schema": esquema})
 
 
 # --- Bloqueo ---

@@ -187,3 +187,19 @@ def test_lectura_de_ficha_registra_su_fecha(db):
     db.guardar_licitacion({"id_externo": "X", "titulo": "T"})
     db.actualizar_detalle_profundo("X", "http://x", "texto")
     assert db.obtener_licitacion("X")["ficha_fecha"]
+
+
+def test_cola_prioriza_las_no_intentadas_sobre_los_reintentos(db):
+    """Un reintento no ocupa el cupo de una licitación nueva, aunque sea más antigua."""
+    for id_ in ("VIEJA_FALLIDA", "VIEJA_OK", "NUEVA"):
+        db.guardar_licitacion({"id_externo": id_, "titulo": id_})
+    conn = sqlite3.connect(db.db_path)
+    conn.execute("UPDATE licitaciones SET fecha_creacion = '2026-10-01 10:00:00' WHERE id_externo LIKE 'VIEJA%'")
+    conn.execute("UPDATE licitaciones SET fecha_creacion = '2026-10-21 10:00:00' WHERE id_externo = 'NUEVA'")
+    conn.commit(); conn.close()
+    db.registrar_fallo("VIEJA_FALLIDA", "IA: inválida", 3)
+    db.registrar_fallo("VIEJA_FALLIDA", "IA: inválida", 3)
+    assert [l["id_externo"] for l in db.obtener_cola_procesamiento(3)] == ["VIEJA_OK", "NUEVA", "VIEJA_FALLIDA"]
+    db.registrar_fallo("VIEJA_FALLIDA", "IA: inválida", 3)   # Tercer fallo: sale de la cola
+    assert [l["id_externo"] for l in db.obtener_cola_procesamiento(3)] == ["VIEJA_OK", "NUEVA"]
+    assert db.obtener_licitacion("VIEJA_FALLIDA")["estado"] == "error"

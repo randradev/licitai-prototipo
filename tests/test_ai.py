@@ -267,3 +267,45 @@ def test_sin_api_key_lanza_value_error(db, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(ValueError):
         AIAnalyst(db)
+
+
+# --- Claves alternativas del modelo (red de seguridad bajo la salida estructurada) ---
+
+def test_validar_acepta_clave_traducida_y_lo_advierte():
+    """Caso real 1057494-72-LP26: Gemini devolvió "capacity" en vez de "capacidad"."""
+    crit = {k: v for k, v in VALIDO["criterios"].items() if k != "capacidad"}
+    crit["capacity"] = criterio(5)
+    res = validar_analisis(dict(VALIDO, criterios=crit))
+    assert res["criterios"]["capacidad"]["nota"] == 5
+    assert any("capacity" in a for a in res["advertencias"])
+
+
+def test_validar_acepta_variantes_de_claves_de_cada_criterio():
+    crit = {"Comercial": criterio(5), "requirements": criterio(4), "capacidad_de_cumplimiento": criterio(4),
+            "Geografía": criterio(3),
+            "economic": {"note": 3, "estado_evidencia": "suficiente", "evidence": "cita", "explanation": "x"}}
+    res = validar_analisis(dict(VALIDO, criterios=crit))
+    assert [res["criterios"][c.clave]["nota"] for c in rubrica.CRITERIOS] == [5, 4, 4, 3, 3]
+    assert res["criterios"]["economica"]["evidencia_estado"] == "suficiente"
+    assert res["criterios"]["economica"]["evidencia"] == "cita"
+
+
+def test_clave_canonica_prevalece_sobre_alias():
+    crit = dict(VALIDO["criterios"], capacity=criterio(0))
+    res = validar_analisis(dict(VALIDO, criterios=crit))
+    assert res["criterios"]["capacidad"]["nota"] == 4 and res["advertencias"] == []
+
+
+def test_clave_desconocida_sigue_siendo_invalida():
+    crit = {k: v for k, v in VALIDO["criterios"].items() if k != "capacidad"}
+    crit["volumen"] = criterio(4)
+    with pytest.raises(ValueError, match="capacidad"):
+        validar_analisis(dict(VALIDO, criterios=crit))
+
+
+def test_analisis_con_clave_traducida_se_persiste(db_extraida):
+    crit = {k: v for k, v in VALIDO["criterios"].items() if k != "capacidad"}
+    crit["capacity"] = criterio(4)
+    AIAnalyst(db_extraida, modelo=ModeloFalso(json.dumps(dict(VALIDO, criterios=crit)))).analizar_licitacion("X")
+    fila = db_extraida.obtener_licitacion("X")
+    assert fila["estado"] == "analizado" and fila["score_idoneidad"] == 83
