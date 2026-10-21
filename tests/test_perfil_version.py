@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 from core.ai_analyst import AIAnalyst, AnalisisFallido, CuotaAgotada
 from core.database_mgr import DatabaseManager
 from core.parsing import version_perfil
+from core.rubrica import RUBRICA_VERSION
 from main import reanalizar_lote
 from tests.test_ai import ModeloFalso, VALIDO
 from web import vistas
@@ -136,11 +137,13 @@ def app_perfil(tmp_path, monkeypatch):
     v = version_perfil(PERFIL)
     conn = sqlite3.connect(path)
     conn.executemany(
-        "INSERT INTO licitaciones (id_externo, titulo, estado, score_ia, analisis_ia_json, descripcion_pro, analisis_perfil_version)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [("AL_DIA", "Reactivos 1", "analizado", 8, '{"veredicto": "ok"}', "ficha", v),
-         ("VIEJA", "Reactivos 2", "analizado", 8, '{"veredicto": "ok"}', "ficha", "vieja456"),
-         ("COLA_NO", "Servicio de guardias", "pendiente", None, None, None, None)])
+        "INSERT INTO licitaciones (id_externo, titulo, estado, score_ia, analisis_ia_json, descripcion_pro, analisis_perfil_version,"
+        " rubrica_version, score_estado, score_idoneidad) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [("AL_DIA", "Reactivos 1", "analizado", None, '{"veredicto": "ok"}', "ficha", v, RUBRICA_VERSION, "definitivo", 83),
+         ("VIEJA", "Reactivos 2", "analizado", None, '{"veredicto": "ok"}', "ficha", "vieja456", RUBRICA_VERSION, "definitivo", 70),
+         # Perfil al día, pero analizada con la escala anterior (1-10)
+         ("ESCALA_ANT", "Reactivos 3", "analizado", 8, '{"veredicto": "ok"}', "ficha", v, None, None, None),
+         ("COLA_NO", "Servicio de guardias", "pendiente", None, None, None, None, None, None, None)])
     conn.commit()
     conn.close()
     return db
@@ -168,11 +171,14 @@ def test_pagina_perfil_muestra_impacto_y_reanaliza_con_confirmacion(app_perfil, 
     at = _app_perfil()
     assert not at.exception
     boton = next(b for b in at.button if b.key == "btn_reanalizar_lote")
-    assert boton.label == "Actualizar 1 análisis" and boton.disabled          # Exige confirmación explícita
+    assert boton.label == "Actualizar 2 análisis" and boton.disabled          # Exige confirmación explícita
+    textos = " ".join(m.value for m in at.markdown)
+    assert "versión anterior de tu perfil" in textos and "rúbrica anterior" in textos
     at.checkbox(key="conf_reanalisis").check().run()
     next(b for b in at.button if b.key == "btn_reanalizar_lote").click().run()
-    assert llamadas == ["VIEJA"]                                      # Solo el desalineado
+    assert llamadas == ["VIEJA", "ESCALA_ANT"]                        # Solo los desalineados (perfil o rúbrica)
     assert app_perfil.obtener_licitacion("VIEJA")["analisis_perfil_version"] == version_perfil(PERFIL)
+    assert len(app_perfil.obtener_historial("ESCALA_ANT")) == 1        # El análisis 1-10 quedó en el historial
 
 
 def test_pagina_perfil_quita_de_la_cola(app_perfil):
@@ -188,4 +194,4 @@ def test_cambiar_perfil_marca_analisis_como_anteriores(app_perfil):
     next(ta for ta in at.text_area if ta.label == "Describe tu empresa").input("Nueva bio")
     next(b for b in at.button if "Guardar cambios" in b.label).click().run()
     assert any("no cambian" in s.value for s in at.success)
-    assert next(b for b in at.button if b.key == "btn_reanalizar_lote").label == "Actualizar 2 análisis"   # Ahora ambos quedan desalineados
+    assert next(b for b in at.button if b.key == "btn_reanalizar_lote").label == "Actualizar 3 análisis"   # Ahora todos quedan desalineados

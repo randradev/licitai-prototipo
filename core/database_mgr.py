@@ -45,11 +45,25 @@ COLUMNAS_NUEVAS = {
     "analisis_prompt_version": "TEXT", # Versión del prompt (core/ai_analyst.py)
     "analisis_fecha": "TEXT",          # Momento del análisis (ISO, hora local)
     "analisis_perfil_version": "TEXT", # Versión del perfil usada (core.parsing.version_perfil)
+    # Score de idoneidad según la rúbrica (core/rubrica.py). NULL en análisis históricos
+    "score_idoneidad": "INTEGER",      # 0-100 (NULL si no_elegible o evaluacion_insuficiente)
+    "score_estado": "TEXT",            # definitivo | provisional | no_elegible | evaluacion_insuficiente
+    "score_cobertura": "INTEGER",      # % del peso de la rúbrica con nota
+    "rubrica_version": "TEXT",         # NULL = análisis histórico con score_ia en escala 1-10
+    "ficha_fecha": "TEXT",             # Momento en que se leyó la ficha (fecha de los datos de la fuente)
     # Evaluación humana del análisis (dataset para medir la calidad del score)
     "eval_score": "TEXT",              # 'acertado' | 'muy_alto' | 'muy_bajo'
     "eval_postularia": "TEXT",         # 'si' | 'tal_vez' | 'no'
     "eval_comentario": "TEXT",
     "eval_fecha": "TEXT",
+}
+
+# Columnas que se copian a `analisis_historial` antes de reemplazar un análisis
+COLUMNAS_HISTORIAL = {
+    "score_ia": "INTEGER", "score_idoneidad": "INTEGER", "score_estado": "TEXT", "score_cobertura": "INTEGER",
+    "rubrica_version": "TEXT", "analisis_ia_json": "TEXT", "motivo_archivo": "TEXT", "analisis_modelo": "TEXT",
+    "analisis_prompt_version": "TEXT", "analisis_fecha": "TEXT", "analisis_perfil_version": "TEXT",
+    "eval_score": "TEXT", "eval_postularia": "TEXT", "eval_comentario": "TEXT", "eval_fecha": "TEXT",
 }
 
 EVAL_SCORE_OPCIONES = ("acertado", "muy_alto", "muy_bajo")
@@ -135,7 +149,7 @@ class DatabaseManager:
                     reclamo_pago TEXT,           -- Interpretación de la IA sobre pagos (no verificada)
                     link TEXT,
                     descripcion_pro TEXT,        -- Cuerpo extraído para análisis semántico
-                    score_ia INTEGER,            -- Idoneidad según IA (escala 1-10)
+                    score_ia INTEGER,            -- Score histórico de la IA (escala 1-10); ver score_idoneidad
                     analisis_ia_json TEXT,       -- Estructura JSON con riesgos y veredicto
                     estado TEXT DEFAULT 'pendiente', -- Ver ciclo de vida en el encabezado del módulo
                     motivo_archivo TEXT,         -- Feedback de la IA en caso de descarte
@@ -157,6 +171,18 @@ class DatabaseManager:
                     fallidas INTEGER,
                     detenido_por TEXT,
                     error_descubrimiento TEXT
+                )
+            """)
+            # ENTIDAD 4: HISTORIAL DE ANÁLISIS
+            # Copia de cada análisis reemplazado por un re-análisis (solo inserción),
+            # junto con la evaluación humana que se hizo sobre él.
+            columnas = ", ".join(f"{col} {tipo}" for col, tipo in COLUMNAS_HISTORIAL.items())
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS analisis_historial (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id_externo TEXT NOT NULL,
+                    reemplazado TEXT,            -- Momento en que se reemplazó (ISO, hora local)
+                    {columnas}
                 )
             """)
             self._migrar_esquema(conn)
@@ -237,11 +263,11 @@ class DatabaseManager:
         """
         query = """
             UPDATE licitaciones
-            SET link = ?, descripcion_pro = ?, estado = 'extraido', intentos = 0, ultimo_error = NULL
+            SET link = ?, descripcion_pro = ?, ficha_fecha = ?, estado = 'extraido', intentos = 0, ultimo_error = NULL
             WHERE id_externo = ?
         """
         with self._get_connection() as conn:
-            conn.execute(query, (link, texto_pro, id_externo))
+            conn.execute(query, (link, texto_pro, _ahora_iso(), id_externo))
             conn.commit()
 
     def obtener_licitaciones(self, estado=None):
@@ -263,7 +289,7 @@ class DatabaseManager:
             params = estados
 
         # Orden cronológico real (fechas ISO); las fechas desconocidas van al final
-        query += " ORDER BY fecha_publicacion IS NULL, fecha_publicacion DESC, score_ia DESC"
+        query += " ORDER BY fecha_publicacion IS NULL, fecha_publicacion DESC, score_idoneidad DESC, score_ia DESC"
 
         with self._get_connection() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -358,7 +384,7 @@ class DatabaseManager:
             conn.commit()
 
     def guardar_analisis_ia(self, id_externo, score, analisis_json, motivo=None, modelo=None, prompt_version=None,
-                            perfil_version=None):
+                            perfil_version=None, rubrica=None):
         """
         Persistir los resultados generados por el modelo de IA.
 
@@ -370,27 +396,50 @@ class DatabaseManager:
         anterior, por lo que la UI la marca como desactualizada comparando
         `eval_fecha` con `analisis_fecha`.
 
+        El análisis vigente (con su evaluación) se copia antes a
+        `analisis_historial` en la misma transacción: re-analizar nunca borra.
+
         Args:
             id_externo (str): ID de la licitación.
-            score (int): Puntaje de idoneidad (1-10).
+            score (int | None): Score histórico 1-10 (None en análisis con rúbrica).
             analisis_json (dict): Estructura de riesgos y oportunidades.
             motivo (str, optional): Justificación de archivo en scores bajos.
             modelo (str, optional): Modelo de IA utilizado.
             prompt_version (str, optional): Versión del prompt utilizado.
             perfil_version (str, optional): Versión del perfil de negocio utilizado.
+            rubrica (dict, optional): Resultado de core.rubrica.calcular (score, estado, cobertura, versión).
+        """
+        rubrica = rubrica or {}
+        columnas = ", ".join(COLUMNAS_HISTORIAL)
+        respaldo = f"""
+            INSERT INTO analisis_historial (id_externo, reemplazado, {columnas})
+            SELECT id_externo, ?, {columnas} FROM licitaciones
+            WHERE id_externo = ? AND analisis_ia_json IS NOT NULL
         """
         query = """
             UPDATE licitaciones
             SET score_ia = ?, analisis_ia_json = ?, motivo_archivo = ?,
                 analisis_modelo = ?, analisis_prompt_version = ?, analisis_fecha = ?, analisis_perfil_version = ?,
+                score_idoneidad = ?, score_estado = ?, score_cobertura = ?, rubrica_version = ?,
                 estado = CASE WHEN estado IN ('favorita', 'archivada') THEN estado ELSE 'analizado' END,
                 intentos = 0, ultimo_error = NULL
             WHERE id_externo = ?
         """
+        ahora = _ahora_iso()
         with self._get_connection() as conn:
+            conn.execute(respaldo, (ahora, id_externo))
             conn.execute(query, (score, json.dumps(analisis_json, ensure_ascii=False), motivo,
-                                 modelo, prompt_version, _ahora_iso(), perfil_version, id_externo))
+                                 modelo, prompt_version, ahora, perfil_version,
+                                 rubrica.get("score"), rubrica.get("estado"), rubrica.get("cobertura"),
+                                 rubrica.get("version"), id_externo))
             conn.commit()
+
+    def obtener_historial(self, id_externo):
+        """Análisis anteriores de una licitación, del más reciente al más antiguo."""
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM analisis_historial WHERE id_externo = ? ORDER BY id DESC",
+                                (id_externo,)).fetchall()
+            return [dict(row) for row in rows]
 
     def guardar_evaluacion(self, id_externo, eval_score, postularia, comentario=None):
         """

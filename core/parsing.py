@@ -17,7 +17,7 @@ import hashlib
 import unicodedata
 from datetime import datetime
 
-from core import config
+from core import rubrica
 
 # Valores de relleno que nunca deben sobrescribir un dato real
 MARCADORES = {"", "sin título", "sin titulo", "procesando...", "no detectado",
@@ -270,37 +270,113 @@ def parsear_respuesta_ia(texto):
     return data
 
 
+def _a_nota(valor, campo):
+    """Nota de un criterio: entero (acepta "4" y 4.0) en [NOTA_MIN, NOTA_MAX], o None."""
+    if valor is None:
+        return None
+    if isinstance(valor, bool):
+        raise ValueError(f"{campo} inválida: {valor!r}")
+    try:
+        numero = float(str(valor).strip())
+    except ValueError as e:
+        raise ValueError(f"{campo} no numérica: {valor!r}") from e
+    if not numero.is_integer():
+        raise ValueError(f"{campo} debe ser entera: {valor!r}")
+    nota = int(numero)
+    if not rubrica.NOTA_MIN <= nota <= rubrica.NOTA_MAX:
+        raise ValueError(f"{campo} fuera de rango {rubrica.NOTA_MIN}-{rubrica.NOTA_MAX}: {nota}")
+    return nota
+
+
+def _a_opcion(valor, opciones, campo):
+    """Texto que debe ser una de las opciones (sin distinguir mayúsculas)."""
+    texto = (_a_texto(valor) or "").lower()
+    if texto not in opciones:
+        raise ValueError(f"{campo} inválido: {valor!r} (se esperaba {', '.join(opciones)})")
+    return texto
+
+
+def _validar_criterios(valor, advertencias):
+    """
+    Validar las notas por criterio de la rúbrica.
+
+    Una nota con evidencia "ausente" se anula (no se usan notas sin respaldo) y
+    queda registrada en `advertencias`; nunca se inventa una nota faltante.
+    """
+    if not isinstance(valor, dict):
+        raise ValueError("criterios ausente o no es un objeto")
+    criterios = {}
+    for c in rubrica.CRITERIOS:
+        item = valor.get(c.clave)
+        if not isinstance(item, dict):
+            raise ValueError(f"criterio ausente o inválido: {c.clave}")
+        nota = _a_nota(item.get("nota"), f"nota de {c.clave}")
+        evidencia_estado = _a_opcion(item.get("evidencia_estado"), rubrica.EVIDENCIA_ESTADOS, f"evidencia_estado de {c.clave}")
+        if nota is not None and evidencia_estado == "ausente":
+            advertencias.append(f"{c.nombre}: la IA asignó nota {nota} sin evidencia; no se considera")
+            nota = None
+        elif nota is None and evidencia_estado != "ausente":
+            advertencias.append(f"{c.nombre}: evidencia {evidencia_estado} pero sin nota; queda pendiente")
+        criterios[c.clave] = {
+            "nota": nota,
+            "evidencia_estado": evidencia_estado,
+            "evidencia": _a_texto(item.get("evidencia")),
+            "explicacion": _a_texto(item.get("explicacion")),
+        }
+    return criterios
+
+
+def _validar_excluyentes(valor, advertencias):
+    """
+    Validar los requisitos excluyentes. Un incumplimiento "confirmado" sin
+    evidencia no puede confirmarse: pasa a "no_verificable" y se advierte.
+    """
+    if valor is None:
+        return []
+    if not isinstance(valor, (list, tuple)):
+        raise ValueError("requisitos_excluyentes debe ser una lista")
+    resultado = []
+    for item in valor:
+        if not isinstance(item, dict):
+            raise ValueError("cada requisito excluyente debe ser un objeto")
+        requisito = _a_texto(item.get("requisito"))
+        if not requisito:
+            raise ValueError("requisito excluyente sin descripción")
+        estado = _a_opcion(item.get("estado"), rubrica.EXCLUYENTE_ESTADOS, "estado de requisito excluyente")
+        evidencia = _a_texto(item.get("evidencia"))
+        if estado == "incumplido_confirmado" and not evidencia:
+            advertencias.append(f"Requisito «{requisito}»: incumplimiento sin evidencia; se trata como no verificable")
+            estado = "no_verificable"
+        resultado.append({"requisito": requisito, "estado": estado, "evidencia": evidencia})
+    return resultado
+
+
 def validar_analisis(data):
     """
-    Validar y normalizar el análisis del modelo antes de guardarlo.
+    Validar y normalizar el análisis del modelo antes de guardarlo (rúbrica v1).
 
     Reglas:
-        - score_ia: entero (acepta "8") dentro de [SCORE_MIN, SCORE_MAX].
+        - criterios: los cinco de core/rubrica.py, cada uno con nota entera
+          0-5 o null y evidencia_estado suficiente | parcial | ausente.
+        - requisitos_excluyentes: lista de {requisito, estado, evidencia}.
         - veredicto: texto no vacío.
-        - puntos_criticos / riesgos: listas de textos.
-        - Campos recuperados: textos opcionales.
+        - Listas (puntos críticos, riesgos, faltantes, hechos, inferencias...): listas de textos.
+        - Campos recuperados y objeto_principal: textos opcionales.
+
+    El modelo no entrega el total: lo calcula `core.rubrica.calcular`.
 
     Returns:
-        dict: Análisis normalizado.
+        dict: Análisis normalizado, con `advertencias` de las correcciones aplicadas.
 
     Raises:
-        ValueError: Si falta un campo obligatorio o tiene un valor fuera de rango.
+        ValueError: Si falta un campo obligatorio o tiene un valor inválido.
     """
     if not isinstance(data, dict):
         raise ValueError("El análisis debe ser un objeto")
 
-    score_raw = data.get("score_ia")
-    if isinstance(score_raw, bool) or score_raw is None:
-        raise ValueError(f"score_ia ausente o inválido: {score_raw!r}")
-    try:
-        score_float = float(str(score_raw).strip())
-    except ValueError as e:
-        raise ValueError(f"score_ia no numérico: {score_raw!r}") from e
-    if not score_float.is_integer():
-        raise ValueError(f"score_ia debe ser entero: {score_raw!r}")
-    score = int(score_float)
-    if not config.SCORE_MIN <= score <= config.SCORE_MAX:
-        raise ValueError(f"score_ia fuera de rango {config.SCORE_MIN}-{config.SCORE_MAX}: {score}")
+    advertencias = []
+    criterios = _validar_criterios(data.get("criterios"), advertencias)
+    excluyentes = _validar_excluyentes(data.get("requisitos_excluyentes"), advertencias)
 
     veredicto = _a_texto(data.get("veredicto"))
     if not veredicto:
@@ -310,11 +386,18 @@ def validar_analisis(data):
         "titulo_recuperado": _a_texto(data.get("titulo_recuperado")),
         "organismo_recuperado": _a_texto(data.get("organismo_recuperado")),
         "comportamiento_pago": _a_texto(data.get("comportamiento_pago")),
-        "score_ia": score,
+        "objeto_principal": _a_texto(data.get("objeto_principal")),
+        "criterios": criterios,
+        "requisitos_obligatorios": _a_lista_de_textos(data.get("requisitos_obligatorios")),
+        "requisitos_excluyentes": excluyentes,
+        "datos_faltantes": _a_lista_de_textos(data.get("datos_faltantes")),
+        "hechos_fuente": _a_lista_de_textos(data.get("hechos_fuente")),
+        "inferencias": _a_lista_de_textos(data.get("inferencias")),
         "veredicto": veredicto,
         "puntos_criticos": _a_lista_de_textos(data.get("puntos_criticos")),
         "riesgos": _a_lista_de_textos(data.get("riesgos")),
         "motivo_archivo": _a_texto(data.get("motivo_archivo")),
+        "advertencias": advertencias,
     }
 
 
@@ -333,9 +416,16 @@ def cargar_analisis_guardado(analisis_json):
         return None
     if not isinstance(data, dict):
         return None
-    for campo in ("puntos_criticos", "riesgos"):
+    for campo in ("puntos_criticos", "riesgos", "requisitos_obligatorios", "datos_faltantes",
+                  "hechos_fuente", "inferencias", "advertencias"):
         try:
             data[campo] = _a_lista_de_textos(data.get(campo))
         except ValueError:
             data[campo] = []
+    # Estructuras de la rúbrica (ausentes en análisis históricos)
+    for campo, tipo, vacio in (("criterios", dict, {}), ("rubrica", dict, None), ("requisitos_excluyentes", list, [])):
+        if not isinstance(data.get(campo), tipo):
+            data[campo] = vacio
+    data["requisitos_excluyentes"] = [e for e in data["requisitos_excluyentes"] if isinstance(e, dict)]
+    data["criterios"] = {k: v for k, v in data["criterios"].items() if isinstance(v, dict)}
     return data

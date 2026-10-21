@@ -7,7 +7,9 @@ esquema SQLite, pensado para precargar la demo pública y migrar a la V2.
 
 Separa explícitamente el origen de cada dato:
 - `fuente`: datos tomados literalmente de Mercado Público.
-- `analisis`: salida de la IA (con su trazabilidad).
+- `analisis`: salida de la IA (con su trazabilidad). El score de idoneidad
+  (0-100, estado y desglose) lo calcula core/rubrica.py; `score_ia` es el
+  score histórico en escala 1-10 de los análisis anteriores a la rúbrica.
 - `evaluacion`: juicio humano sobre el análisis.
 
 Las notas internas y el checklist NO se exportan: son de gestión privada.
@@ -18,14 +20,16 @@ import io
 import json
 from datetime import datetime
 
+from core import rubrica
 from core.parsing import cargar_analisis_guardado
 
-VERSION_ESQUEMA = 1
+VERSION_ESQUEMA = 2   # 2: score de idoneidad con rúbrica (score_idoneidad, estado, cobertura, criterios)
 
 COLUMNAS_CSV = [
     "id_externo", "titulo", "organismo", "region", "estado", "fecha_publicacion", "fecha_cierre", "link",
-    "reclamos_pago_n", "score_ia", "veredicto", "puntos_criticos", "riesgos", "motivo_archivo",
-    "interpretacion_pago_ia", "analisis_modelo", "analisis_prompt_version", "analisis_fecha",
+    "reclamos_pago_n", "ficha_fecha", "score_idoneidad", "score_estado", "score_cobertura", "rubrica_version",
+    *[f"nota_{c.clave}" for c in rubrica.CRITERIOS], "score_ia", "veredicto", "puntos_criticos", "riesgos",
+    "motivo_archivo", "interpretacion_pago_ia", "analisis_modelo", "analisis_prompt_version", "analisis_fecha",
     "eval_score", "eval_postularia", "eval_comentario", "eval_fecha",
 ]
 
@@ -44,12 +48,21 @@ def registro_exportable(licit, incluir_ficha=False):
             "fecha_cierre": licit.get("fecha_cierre"),
             "link": licit.get("link"),
             "reclamos_pago_n": licit.get("reclamos_pago_n"),
+            "ficha_fecha": licit.get("ficha_fecha"),
         },
         "analisis": None,
         "evaluacion": None,
     }
     if analisis:
         registro["analisis"] = {
+            "score_idoneidad": licit.get("score_idoneidad"),
+            "score_estado": licit.get("score_estado"),
+            "score_cobertura": licit.get("score_cobertura"),
+            "rubrica_version": licit.get("rubrica_version"),
+            "rubrica": analisis.get("rubrica"),
+            "criterios": analisis.get("criterios", {}),
+            "requisitos_excluyentes": analisis.get("requisitos_excluyentes", []),
+            "datos_faltantes": analisis.get("datos_faltantes", []),
             "score_ia": licit.get("score_ia"),
             "veredicto": analisis.get("veredicto"),
             "puntos_criticos": analisis.get("puntos_criticos", []),
@@ -93,7 +106,9 @@ def a_csv(licitaciones):
         f, a, e = r["fuente"], r["analisis"] or {}, r["evaluacion"] or {}
         escritor.writerow({
             "id_externo": r["id_externo"], "estado": r["estado"], **{k: f.get(k) for k in
-            ("titulo", "organismo", "region", "fecha_publicacion", "fecha_cierre", "link", "reclamos_pago_n")},
+            ("titulo", "organismo", "region", "fecha_publicacion", "fecha_cierre", "link", "reclamos_pago_n", "ficha_fecha")},
+            **{k: a.get(k) for k in ("score_idoneidad", "score_estado", "score_cobertura", "rubrica_version")},
+            **{f"nota_{c.clave}": (a.get("criterios", {}).get(c.clave) or {}).get("nota") for c in rubrica.CRITERIOS},
             "score_ia": a.get("score_ia"), "veredicto": a.get("veredicto"),
             "puntos_criticos": " | ".join(a.get("puntos_criticos", [])),
             "riesgos": " | ".join(a.get("riesgos", [])),

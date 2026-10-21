@@ -17,12 +17,15 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from core import rubrica
 from core.parsing import cargar_analisis_guardado, dias_para_cierre, es_valor_util, parsear_fecha_hora
 
 ESTADOS_ACTIVOS = ("analizado", "favorita")
 ESTADOS_CON_ANALISIS = ("analizado", "favorita", "archivada")
 MIN_EVALUACIONES_CALIBRACION = 10
-TRAMOS_SCORE = (("1–4", 1, 4), ("5–6", 5, 6), ("7–8", 7, 8), ("9–10", 9, 10))
+# Tramos del score 0-100 = rangos de interpretación de la rúbrica, de menor a mayor
+_LIMITES = sorted(desde for desde, _ in rubrica.RANGOS)
+TRAMOS_SCORE = tuple((f"{d}–{h}", d, h) for d, h in zip(_LIMITES, [x - 1 for x in _LIMITES[1:]] + [100]))
 PERIODOS = {"Últimos 7 días": 7, "Últimos 30 días": 30, "Últimos 90 días": 90, "Todo": None}
 
 # Tokens de los gráficos, alineados con web/estilos.py (tema "premium oscuro").
@@ -105,13 +108,14 @@ def datos_calendario(licitaciones, ahora=None):
             continue
         inicio = parsear_fecha_hora(l.get("fecha_publicacion")) or parsear_fecha_hora((l.get("fecha_creacion") or "")[:19]) or ahora
         dias = dias_para_cierre(l.get("fecha_cierre"), ahora)
-        score = l.get("score_ia")
+        res = rubrica.resultado_guardado(l)
+        score = rubrica.texto_resultado(res) if res["estado"] else None
         cuando = "hoy" if dias == 0 else "mañana" if dias == 1 else f"en {dias} días"
         filas.append({
             "id_externo": l["id_externo"], "titulo": _titulo_corto(l, 55), "organismo": l.get("organismo") or "—",
             "inicio": inicio, "cierre": cierre, "score": score, "dias": dias,
             "favorita": l.get("estado") == "favorita",
-            "detalle": f"Cierra el {cierre.strftime('%d/%m')} · {cuando}" + (f" · score {score}" if score is not None else ""),
+            "detalle": f"Cierra el {cierre.strftime('%d/%m')} · {cuando}" + (f" · {score}" if score is not None else ""),
         })
     filas.sort(key=lambda f: f["cierre"])
     # Etiqueta del eje única por fila: dos títulos iguales no deben compartir (y superponer) una fila
@@ -123,23 +127,48 @@ def datos_calendario(licitaciones, ahora=None):
     return filas
 
 
+def _score_rubrica(licit):
+    """Score 0-100 (definitivo o provisional) de una licitación con análisis, o None."""
+    if licit.get("estado") not in ESTADOS_CON_ANALISIS:
+        return None
+    res = rubrica.resultado_guardado(licit)
+    return res["valor"] if res["estado"] in rubrica.ESTADOS_CON_NUMERO else None
+
+
+def _tramo(score):
+    return next(etiqueta for etiqueta, desde, hasta in TRAMOS_SCORE if desde <= score <= hasta)
+
+
 def datos_riesgo(licitaciones):
-    """Licitaciones con score y con reclamos de pago extraídos de la ficha."""
+    """
+    Licitaciones con score 0-100 y con reclamos de pago extraídos de la ficha.
+    El riesgo de pago se muestra junto al score, pero no forma parte de él.
+    """
     return [{
         "id_externo": l["id_externo"], "titulo": _titulo_corto(l, 70), "organismo": l.get("organismo") or "—",
-        "reclamos": l["reclamos_pago_n"], "score": l["score_ia"],
-    } for l in licitaciones
-        if l.get("estado") in ESTADOS_CON_ANALISIS and l.get("score_ia") is not None and l.get("reclamos_pago_n") is not None]
+        "reclamos": l["reclamos_pago_n"], "score": _score_rubrica(l),
+    } for l in licitaciones if _score_rubrica(l) is not None and l.get("reclamos_pago_n") is not None]
 
 
 def datos_histograma(licitaciones):
-    """Cantidad de licitaciones por score (1 a 10, incluidos los ceros)."""
-    conteo = {s: 0 for s in range(1, 11)}
+    """Cantidad de licitaciones por tramo del score 0-100 (incluidos los tramos vacíos)."""
+    conteo = {etiqueta: 0 for etiqueta, _, _ in TRAMOS_SCORE}
     for l in licitaciones:
-        s = l.get("score_ia")
-        if l.get("estado") in ESTADOS_CON_ANALISIS and isinstance(s, int) and s in conteo:
-            conteo[s] += 1
-    return [{"score": s, "cantidad": n} for s, n in conteo.items()]
+        s = _score_rubrica(l)
+        if s is not None:
+            conteo[_tramo(s)] += 1
+    return [{"score": t, "cantidad": n} for t, n in conteo.items()]
+
+
+def datos_estados(licitaciones):
+    """Análisis sin score comparable, por estado: no elegibles, insuficientes y de la escala anterior."""
+    conteo = {rubrica.NO_ELEGIBLE: 0, rubrica.INSUFICIENTE: 0, rubrica.HISTORICO: 0}
+    for l in licitaciones:
+        if l.get("estado") in ESTADOS_CON_ANALISIS:
+            estado = rubrica.resultado_guardado(l)["estado"]
+            if estado in conteo:
+                conteo[estado] += 1
+    return conteo
 
 
 def datos_calibracion(licitaciones):
@@ -150,10 +179,11 @@ def datos_calibracion(licitaciones):
         dict: total evaluadas, filas por tramo (n, sí, tal vez, no, % sí) y
               resumen de la evaluación del score (acertado / muy alto / muy bajo).
     """
-    evaluadas = [l for l in licitaciones if l.get("eval_postularia") and l.get("score_ia") is not None]
+    # Solo scores 0-100 de la rúbrica: los históricos (1-10) no son comparables
+    evaluadas = [l for l in licitaciones if l.get("eval_postularia") and _score_rubrica(l) is not None]
     filas = []
     for etiqueta, desde, hasta in TRAMOS_SCORE:
-        grupo = [l for l in evaluadas if desde <= l["score_ia"] <= hasta]
+        grupo = [l for l in evaluadas if desde <= _score_rubrica(l) <= hasta]
         n = len(grupo)
         cuenta = {op: sum(1 for l in grupo if l["eval_postularia"] == op) for op in ("si", "tal_vez", "no")}
         filas.append({"tramo": etiqueta, "n": n, "si": cuenta["si"], "tal_vez": cuenta["tal_vez"], "no": cuenta["no"],
@@ -204,7 +234,7 @@ def grafico_calendario(filas, t, ahora=None):
     maximo = max(df["dias"].max(), 1)
     tooltip = [alt.Tooltip("titulo:N", title="Licitación"), alt.Tooltip("organismo:N", title="Organismo"),
                alt.Tooltip("cierre:T", title="Cierre", format="%d/%m/%Y %H:%M"),
-               alt.Tooltip("dias:Q", title="Días para el cierre"), alt.Tooltip("score:Q", title="Score")]
+               alt.Tooltip("dias:Q", title="Días para el cierre"), alt.Tooltip("score:N", title="Score")]
     base = alt.Chart(df).encode(
         y=alt.Y("fila:N", sort=list(df["fila"]), title=None,
                 axis=alt.Axis(labelLimit=340, labelColor=t["texto2"], labelFontSize=12, ticks=False, domain=False)),
@@ -224,7 +254,7 @@ def grafico_riesgo(filas, t):
                alt.Tooltip("score:Q", title="Score"), alt.Tooltip("reclamos:Q", title="Reclamos por pagos atrasados")]
     enc = dict(
         x=alt.X("reclamos:Q", title="Reclamos por pagos atrasados (últimos 12 meses)", scale=alt.Scale(zero=True)),
-        y=alt.Y("score:Q", title="Score", scale=alt.Scale(domain=[0, 10]), axis=alt.Axis(values=list(range(0, 11, 2)))),
+        y=alt.Y("score:Q", title="Score (0–100)", scale=alt.Scale(domain=[0, 100]), axis=alt.Axis(values=list(range(0, 101, 20)))),
     )
     puntos = alt.Chart(df).mark_circle(size=90, color=t["serie"], opacity=0.85, stroke=t["superficie"], strokeWidth=2).encode(**enc)
     # Área de acierto mayor que la marca (≥24px) para el tooltip
@@ -242,7 +272,7 @@ def _eje_conteo(maximo):
 def grafico_histograma(filas, t):
     df = pd.DataFrame(filas)
     return _config(alt.Chart(df).mark_bar(color=t["serie"], cornerRadiusTopLeft=4, cornerRadiusTopRight=4, width=22).encode(
-        x=alt.X("score:O", title="Score", axis=alt.Axis(labelAngle=0)),
+        x=alt.X("score:O", title="Score (0–100)", sort=[t_[0] for t_ in TRAMOS_SCORE], axis=alt.Axis(labelAngle=0)),
         y=alt.Y("cantidad:Q", title="Licitaciones", axis=_eje_conteo(df["cantidad"].max()),
                 scale=alt.Scale(domain=[0, max(int(df["cantidad"].max()), 1)])),
         tooltip=[alt.Tooltip("score:O", title="Score"), alt.Tooltip("cantidad:Q", title="Licitaciones")],
@@ -338,7 +368,11 @@ def render(db, ahora=None):
                 f"Cada punto es una licitación ({len(riesgo)}). Considera que los organismos que compran mucho "
                 "suelen acumular más reclamos.")
         if not riesgo:
-            _vacio("Sin licitaciones con información de pagos en este periodo.")
+            if not any(_score_rubrica(l) is not None for l in periodo):
+                _vacio("Aún no hay licitaciones con score de la rúbrica actual en este periodo. "
+                       "Se completa con los próximos análisis.")
+            else:
+                _vacio("Las licitaciones con score de este periodo no traen información de pagos en su ficha.")
         else:
             st.altair_chart(grafico_riesgo(riesgo, t), width="stretch")
             _tabla(riesgo, {"titulo": "Licitación", "organismo": "Organismo", "score": "Score", "reclamos": "Reclamos de pago"})
@@ -347,12 +381,19 @@ def render(db, ahora=None):
     with c2, st.container(border=True, height="stretch", key="lcard_pan_4"):
         hist = datos_histograma(periodo)
         n_hist = sum(f["cantidad"] for f in hist)
-        _titulo("Distribución de scores", f"Cuántas licitaciones obtuvieron cada score ({n_hist} en total).")
+        _titulo("Distribución de scores",
+                f"Cuántas licitaciones quedaron en cada tramo del score, definitivo o provisional ({n_hist} en total).")
         if not n_hist:
-            _vacio("Sin análisis en este periodo.")
+            _vacio("Sin scores de la rúbrica actual en este periodo.")
         else:
             st.altair_chart(grafico_histograma(hist, t), width="stretch")
             _tabla(hist, {"score": "Score", "cantidad": "Licitaciones"})
+        estados = datos_estados(periodo)
+        aparte = [f"{_plural(estados[rubrica.NO_ELEGIBLE], 'no elegible', 'no elegibles')}",
+                  f"{estados[rubrica.INSUFICIENTE]} con evaluación insuficiente",
+                  f"{estados[rubrica.HISTORICO]} con la escala anterior (1–10)"]
+        if any(estados.values()):
+            st.caption("Sin score comparable: " + " · ".join(aparte) + ".")
 
     # --- Calibración ---
     with st.container(border=True, key="lcard_pan_5"):

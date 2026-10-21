@@ -123,9 +123,11 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3-flash-preview"
 IA_MAX_CHARS = _env_int("LICITAI_IA_MAX_CHARS", 40000)  # Límite del corpus enviado al modelo
 GEMINI_TEMPERATURE = 0.0  # Reduce la variación del score entre ejecuciones sobre la misma ficha
 
-# --- Escala del score (única para prompt, BD, consola y UI) ---
+# --- Escala histórica del score (análisis sin rubrica_version, columna score_ia) ---
+# Solo para mostrar análisis anteriores a la rúbrica; la escala vigente (0-100),
+# sus pesos y umbrales están en core/rubrica.py.
 SCORE_MIN = 1
 SCORE_MAX = 10
-UMBRAL_DESCARTE = 5   # score < UMBRAL_DESCARTE => la IA debe justificar el descarte
+UMBRAL_DESCARTE = 5   # score < UMBRAL_DESCARTE => se muestra el motivo de descarte
 UMBRAL_ALTO = 7       # score >= UMBRAL_ALTO => 🟢
 UMBRAL_MEDIO = 4      # score >= UMBRAL_MEDIO => 🟡, menor => 🔴

@@ -173,6 +173,15 @@ h1, h2, h3, h4, h5 {{ letter-spacing: -.015em; }}
 .l-lista li::marker {{ color: var(--l-tenue); }}
 .l-nota {{ font-size: .8rem; color: var(--l-muted); line-height: 1.45; }}
 .l-dato {{ font-size: .86rem; color: var(--l-texto2); line-height: 1.5; }}
+.l-aviso {{ border: 1px solid var(--l-borde); border-left: 3px solid var(--l-medio-tx); background: var(--l-medio-bg);
+  border-radius: .55rem; padding: .5rem .75rem; font-size: .86rem; color: var(--l-texto); line-height: 1.45; margin-top: .45rem; }}
+.l-crit {{ width: 100%; border-collapse: collapse; font-size: .84rem; color: var(--l-texto2); }}
+.l-crit th {{ text-align: left; font-weight: 600; color: var(--l-muted); font-size: .74rem; padding: .3rem .4rem;
+  border-bottom: 1px solid var(--l-borde); }}
+.l-crit td {{ padding: .45rem .4rem; border-bottom: 1px solid var(--l-borde); vertical-align: top; line-height: 1.4; }}
+.l-crit td b {{ color: var(--l-texto); font-weight: 600; }}
+.l-crit .l-crit-nota {{ white-space: nowrap; font-weight: 700; color: var(--l-texto); }}
+details.l-tec.l-tec-texto div {{ font-family: inherit; font-size: .84rem; color: var(--l-texto2); }}
 .l-dato b {{ color: var(--l-texto); font-weight: 600; }}
 .l-pago {{ border: 1px solid var(--l-borde); background: rgba(255,255,255,.025); padding: .5rem .75rem;
   font-size: .86rem; color: var(--l-texto2); border-radius: .55rem; display: flex; gap: .5rem; align-items: center; }}

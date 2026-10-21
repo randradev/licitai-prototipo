@@ -18,7 +18,7 @@ from datetime import datetime
 from html import escape
 
 import streamlit as st
-from core import config
+from core import config, rubrica
 from core.database_mgr import DatabaseManager
 from core.exportar import a_csv, a_json
 from core.parsing import (cargar_analisis_guardado, coincide_keywords, dias_para_cierre, es_valor_util, fecha_iso,
@@ -44,23 +44,30 @@ COLOR_NIVEL = {"alto": "#0ca30c", "medio": "#fab219", "bajo": "#d03b3b", "nulo":
 # HELPERS DE PRESENTACIÓN (puros, sin Streamlit)
 # ===================================================================
 
-def score_de(licit):
-    """Devolver el score como entero, o None si no existe o no es válido."""
-    try:
-        return int(licit.get('score_ia'))
-    except (TypeError, ValueError):
-        return None
+def score_comparable(licit):
+    """Score 0-100 de la rúbrica (definitivo o provisional), o None (sin número, histórico o sin análisis)."""
+    res = rubrica.resultado_guardado(licit)
+    return res["valor"] if res["estado"] in rubrica.ESTADOS_CON_NUMERO else None
 
 
-def nivel_score(score):
-    """Nivel según los umbrales únicos de core/config.py: 'alto' | 'medio' | 'bajo' | 'nulo'."""
-    if score is None:
-        return "nulo"
-    return "alto" if score >= config.UMBRAL_ALTO else "medio" if score >= config.UMBRAL_MEDIO else "bajo"
+# Orden de "Mayor score": primero los que tienen score de la rúbrica, luego los históricos
+# (otra escala, no comparables), luego los que no tienen número.
+_GRUPO_ORDEN = {rubrica.DEFINITIVO: 0, rubrica.PROVISIONAL: 0, rubrica.HISTORICO: 1,
+                rubrica.INSUFICIENTE: 2, rubrica.NO_ELEGIBLE: 3}
 
 
-def texto_score(score):
-    return f"{score}/{config.SCORE_MAX}" if score is not None else "Sin score"
+def clave_mayor_score(licit):
+    res = rubrica.resultado_guardado(licit)
+    return (_GRUPO_ORDEN.get(res["estado"], 4), -(res["valor"] or 0))
+
+
+def sugiere_descartar(res):
+    """True si el resultado indica que la licitación podría no convenir (para mostrar el motivo)."""
+    if res["estado"] == rubrica.NO_ELEGIBLE:
+        return True
+    if res["estado"] in rubrica.ESTADOS_CON_NUMERO:
+        return res["valor"] < rubrica.UMBRAL_DESCARTE
+    return res["estado"] == rubrica.HISTORICO and res["valor"] < config.UMBRAL_DESCARTE
 
 
 def titulo_de(licit, analisis=None):
@@ -88,6 +95,9 @@ def info_pago(licit):
     fuente = None
     if n is not None:
         fuente = f"{n} reclamos por pagos atrasados en los últimos 12 meses · Fuente: Mercado Público"
+        leida = formatear_fecha(licit.get('ficha_fecha'))
+        if leida:
+            fuente += f" (ficha leída el {leida})"
     ia = licit.get('reclamo_pago') if es_valor_util(licit.get('reclamo_pago')) else None
     return fuente, ia
 
@@ -155,6 +165,12 @@ def afectados_por_perfil(licitaciones, version_actual, estados=('analizado', 'fa
             and analisis_con_perfil_anterior(l, version_actual)]
 
 
+def con_rubrica_anterior(licitaciones, estados=('analizado', 'favorita')):
+    """Análisis activos hechos sin la rúbrica vigente (p. ej. históricos 1-10): candidatos a re-evaluar a pedido."""
+    return [l for l in licitaciones if l.get('estado') in estados and l.get('descripcion_pro')
+            and l.get('analisis_ia_json') and l.get('rubrica_version') != rubrica.RUBRICA_VERSION]
+
+
 def cola_fuera_de_perfil(licitaciones, perfil):
     """Pendientes/extraídas cuyo título ya no coincide con las keywords del perfil."""
     positivas = normalizar_keywords((perfil or {}).get('keywords_pos'))
@@ -196,7 +212,8 @@ def filtrar_y_ordenar(lista, texto="", score_min=None, regiones=(), orden=ORDENE
     Aplicar los filtros de la vista de lista (función pura).
 
     - texto: busca en título y organismo, sin distinguir mayúsculas ni tildes.
-    - score_min: excluye las que no alcanzan el score (las sin score se excluyen si hay mínimo > 1).
+    - score_min: mínimo en la escala 0-100 de la rúbrica. Con un mínimo > 0 quedan
+      fuera las que no tienen score comparable (no elegibles, insuficientes, históricas).
     - regiones: si se indica, solo esas regiones.
     - orden: 'Cierre más próximo' (sin fecha al final), 'Mayor score' o 'Más recientes'.
     """
@@ -205,8 +222,8 @@ def filtrar_y_ordenar(lista, texto="", score_min=None, regiones=(), orden=ORDENE
     for l in lista:
         if busqueda and busqueda not in normalizar_texto(f"{l.get('titulo') or ''} {l.get('organismo') or ''}"):
             continue
-        s = score_de(l)
-        if score_min and score_min > 1 and (s is None or s < score_min):
+        s = score_comparable(l)
+        if score_min and (s is None or s < score_min):
             continue
         if regiones and l.get('region') not in regiones:
             continue
@@ -215,24 +232,26 @@ def filtrar_y_ordenar(lista, texto="", score_min=None, regiones=(), orden=ORDENE
         resultado.append(l)
 
     if orden == "Mayor score":
-        return sorted(resultado, key=lambda l: -(score_de(l) or 0))
+        return sorted(resultado, key=clave_mayor_score)
     if orden == "Cierre más próximo":
         def clave_cierre(l):
             cierre = parsear_fecha_hora(l.get('fecha_cierre'))
-            return (cierre is None, cierre or datetime.max, -(score_de(l) or 0))
+            return (cierre is None, cierre or datetime.max, clave_mayor_score(l))
         return sorted(resultado, key=clave_cierre)
     return sorted(resultado, key=lambda l: fecha_iso(l.get('fecha_publicacion')) or "", reverse=True)
 
 
 def metricas_resumen(licitaciones, ahora=None):
-    """Indicadores de la cabecera."""
+    """Indicadores de la cabecera. El promedio usa solo scores definitivos (los provisionales no son comparables)."""
     activas = [l for l in licitaciones if l.get('estado') in ('analizado', 'favorita')
                and (dias_para_cierre(l.get('fecha_cierre'), ahora) or 0) >= 0]
-    scores = [score_de(l) for l in activas if score_de(l) is not None]
+    resultados = [rubrica.resultado_guardado(l) for l in activas]
+    scores = [r["valor"] for r in resultados if r["estado"] == rubrica.DEFINITIVO]
     return {
         "activas": len(activas),
         "cierran_7": sum(1 for l in activas if (d := dias_para_cierre(l.get('fecha_cierre'), ahora)) is not None and d <= 7),
         "score_promedio": round(sum(scores) / len(scores), 1) if scores else None,
+        "n_definitivos": len(scores),
         "en_cola": sum(1 for l in licitaciones if l.get('estado') in ESTADOS_COLA),
     }
 
@@ -295,25 +314,88 @@ def _chip(texto, icono=None, nivel=""):
     return f'<span class="l-chip {"l-" + nivel if nivel else ""}">{ico}{escape(str(texto))}</span>'
 
 
-def html_anillo(score):
-    """Score como anillo de progreso (0-10) con el número al centro (degradado cónico: sin SVG)."""
-    nivel = nivel_score(score)
-    avance = round(100 * score / config.SCORE_MAX) if score is not None else 0
-    return (f'<div class="l-anillo" title="Score según la IA" '
+def html_anillo(res):
+    """
+    Resultado del score como anillo de progreso con el valor al centro (degradado cónico: sin SVG).
+    Cada estado se distingue por el texto central, no solo por el color.
+    """
+    estado, valor = res["estado"], res["valor"]
+    nivel, avance = res["nivel"], round(100 * valor / res["escala"]) if valor is not None else 0
+    centro, pie = {
+        rubrica.DEFINITIVO: (valor, "/100"),
+        rubrica.PROVISIONAL: (valor, "PROV."),
+        rubrica.HISTORICO: (valor, f"/{res['escala']} ANT."),
+        rubrica.NO_ELEGIBLE: ("✕", "NO ELEG."),
+        rubrica.INSUFICIENTE: ("?", "INCOMPL."),
+    }.get(estado, ("–", "SCORE"))
+    if estado == rubrica.NO_ELEGIBLE:
+        nivel, avance = "bajo", 100
+    titulo = rubrica.texto_resultado(res) if estado else "Sin análisis"
+    return (f'<div class="l-anillo" title="{escape(titulo)}" '
             f'style="--p:{avance}%; --c:{COLOR_NIVEL[nivel]}">'
-            f'<div class="l-anillo-txt"><b>{score if score is not None else "–"}</b><small>SCORE</small></div></div>')
+            f'<div class="l-anillo-txt"><b>{centro}</b><small>{pie}</small></div></div>')
+
+
+def chips_score(res, analisis=None):
+    """
+    Chips con la interpretación del score y su estado (definitivo, provisional, especial o histórico).
+    Si el score no es definitivo, también muestra lo que sí se sabe: el encaje comercial y
+    si los requisitos quedaron por revisar en las bases.
+    """
+    estado = res["estado"]
+    if estado == rubrica.HISTORICO:
+        return [_chip("Escala anterior (1–10)", "history")]
+    chips = {
+        rubrica.DEFINITIVO: lambda: [_chip(res["etiqueta"], "insights", res["nivel"])],
+        rubrica.PROVISIONAL: lambda: [_chip(f"Provisional · {res['etiqueta']}", "pending", "medio"),
+                                      _chip(f"Cobertura {res['cobertura']} %", "rule")],
+        rubrica.NO_ELEGIBLE: lambda: [_chip("No elegible", "block", "bajo")],
+        rubrica.INSUFICIENTE: lambda: [_chip("Evaluación incompleta", "help")],
+    }.get(estado, list)()
+    criterios = (analisis or {}).get("criterios") or {}
+    if estado in (rubrica.PROVISIONAL, rubrica.INSUFICIENTE, rubrica.NO_ELEGIBLE) and criterios:
+        comercial = (criterios.get("comercial") or {}).get("nota")
+        if isinstance(comercial, int):
+            nivel = "alto" if comercial >= 4 else "medio" if comercial >= 2 else "bajo"
+            chips.append(_chip(f"Encaje comercial {comercial}/{rubrica.NOTA_MAX}", "storefront", nivel))
+        if (criterios.get("requisitos") or {}).get("nota") is None:
+            chips.append(_chip("Requisitos: revisar bases", "description"))
+    return chips
+
+
+EVIDENCIA_LABELS = {"suficiente": "Evidencia suficiente", "parcial": "Evidencia parcial", "ausente": "Sin evidencia"}
+EXCLUYENTE_LABELS = {"incumplido_confirmado": "No se cumple (confirmado)", "no_verificable": "No verificable",
+                     "cumplido": "Se cumple"}
+
+
+def html_desglose(analisis):
+    """Tabla de la rúbrica: nota, peso, estado de evidencia y justificación de cada criterio."""
+    criterios = (analisis or {}).get("criterios") or {}
+    filas = []
+    for c in rubrica.CRITERIOS:
+        item = criterios.get(c.clave) or {}
+        nota = item.get("nota")
+        nota_txt = f"{nota}/{rubrica.NOTA_MAX}" if isinstance(nota, int) else "Sin nota"
+        detalle = " · ".join(escape(str(x)) for x in (item.get("explicacion"), item.get("evidencia")) if x)
+        filas.append(f'<tr><td><b>{escape(c.nombre)}</b><br><span class="l-nota">Peso {c.peso} %</span></td>'
+                     f'<td class="l-crit-nota">{nota_txt}</td>'
+                     f'<td>{escape(EVIDENCIA_LABELS.get(item.get("evidencia_estado"), "—"))}'
+                     f'{"<br><span class=l-nota>" + detalle + "</span>" if detalle else ""}</td></tr>')
+    return ('<table class="l-crit"><thead><tr><th>Criterio</th><th>Nota</th><th>Evidencia</th></tr></thead>'
+            f'<tbody>{"".join(filas)}</tbody></table>')
 
 
 def html_tarjeta(licit, analisis=None, ahora=None, perfil_anterior=False):
     """Cabecera de tarjeta: anillo de score, título, organismo y chips de contexto."""
-    chips = [_chip(etiqueta_cierre(licit, ahora), "schedule", urgencia_cierre(licit, ahora))]
+    res = rubrica.resultado_guardado(licit)
+    chips = chips_score(res, analisis) + [_chip(etiqueta_cierre(licit, ahora), "schedule", urgencia_cierre(licit, ahora))]
     if es_valor_util(licit.get('region')):
         chips.append(_chip(region_corta(licit['region']), "location_on"))
     if licit.get('reclamos_pago_n') is not None:
         chips.append(_chip(f"{licit['reclamos_pago_n']} reclamos de pago", "payments"))
     if perfil_anterior:
         chips.append(_chip("Analizada con un perfil anterior", "history", "medio"))
-    return (f'<div class="l-tarjeta">{html_anillo(score_de(licit))}<div class="l-cuerpo">'
+    return (f'<div class="l-tarjeta">{html_anillo(res)}<div class="l-cuerpo">'
             f'<p class="l-titulo">{escape(titulo_de(licit, analisis))}</p>'
             f'<p class="l-org">{escape(organismo_de(licit))} · <span class="l-id">{escape(licit["id_externo"])}</span></p>'
             f'<div class="l-chips">{"".join(chips)}</div></div></div>')
@@ -418,8 +500,9 @@ def _render_pago(licit):
         st.html(f'<div class="l-pago"><span class="l-ico">verified</span>{escape(fuente)}</div>')
     if ia:
         st.html(f'<div class="l-nota">Lectura de la IA (sin verificar): {escape(ia)}</div>')
-    if not fuente and not ia:
-        st.html('<div class="l-nota">Sin información verificada sobre pagos.</div>')
+    if not fuente:
+        # La ausencia de reclamos en el texto no equivale a bajo riesgo de pago
+        st.html('<div class="l-nota">Sin datos verificados sobre pagos del organismo.</div>')
 
 
 def _fechas_y_trazabilidad(l, con_analisis=True):
@@ -443,7 +526,8 @@ def _reanalizar(base, id_externo):
             motivo = mensaje_error_amigable(f"IA: {e}" if not isinstance(e, ValueError) else "GEMINI_API_KEY")
             st.session_state['ultimo_mensaje'] = ("error", f"No se pudo actualizar el análisis; se mantiene el anterior. {motivo}")
         else:
-            st.session_state['ultimo_mensaje'] = ("success", f"Análisis actualizado: score {texto_score(analisis['score_ia'])}.")
+            res = rubrica.resultado_guardado(base.obtener_licitacion(id_externo) or {})
+            st.session_state['ultimo_mensaje'] = ("success", f"Análisis actualizado: {rubrica.texto_resultado(res)}.")
     st.rerun()
 
 
@@ -476,20 +560,59 @@ def _form_evaluacion(base, l, prefijo):
                 st.rerun()
 
 
+def _render_rubrica(l, an, simplificado=False):
+    """Estado del score, su motivo y (si no es simplificado) el desglose por criterio."""
+    res = rubrica.resultado_guardado(l)
+    r = an.get('rubrica') or {}
+    if res["estado"] == rubrica.HISTORICO:
+        st.html('<div class="l-nota">Este análisis usa la escala anterior (1–10), sin desglose por criterio. '
+                'Puedes actualizarlo con la rúbrica actual desde «Más» o desde Perfil.</div>')
+        return
+    if not res["estado"]:   # Análisis sin score registrado: no hay desglose que mostrar
+        return
+    if r.get('motivo'):
+        st.html(f'<div class="l-aviso">{escape(r["motivo"])}</div>')
+    if simplificado:
+        return
+    seccion("Desglose del score")
+    st.html(html_desglose(an))
+    excluyentes = an.get('requisitos_excluyentes') or []
+    if excluyentes:
+        seccion("Requisitos excluyentes")
+        st.html(html_lista(f"{e.get('requisito')} — {EXCLUYENTE_LABELS.get(e.get('estado'), e.get('estado'))}"
+                           + (f" ({e['evidencia']})" if e.get('evidencia') else "") for e in excluyentes))
+    if an.get('datos_faltantes'):
+        seccion("Información faltante")
+        st.html(html_lista(an['datos_faltantes']))
+    advertencias = list(an.get('advertencias') or []) + list(r.get('advertencias') or [])
+    if an.get('corpus_truncado'):
+        advertencias.append("La ficha era muy extensa y la IA solo leyó una parte; puede faltar información.")
+    if advertencias:
+        st.html('<div class="l-nota"><b>Advertencias:</b> ' + " · ".join(escape(str(a)) for a in advertencias) + '</div>')
+    if an.get('hechos_fuente') or an.get('inferencias'):
+        st.html('<details class="l-tec l-tec-texto"><summary>Hechos de la ficha e inferencias de la IA</summary><div>'
+                + ('<b>Hechos de la ficha</b>' + html_lista(an['hechos_fuente']) if an.get('hechos_fuente') else '')
+                + ('<b>Inferencias de la IA</b>' + html_lista(an['inferencias']) if an.get('inferencias') else '')
+                + '</div></details>')
+    st.html('<div class="l-nota">El score mide la compatibilidad con tu perfil; no es la probabilidad de adjudicarte '
+            'la licitación. Sus pesos y rangos son iniciales y aún no están validados.</div>')
+
+
 def _detalle_analisis(base, l, an, simplificado=False, prefijo="lista"):
-    """Contenido del desplegable: veredicto, puntos críticos, riesgos, pagos, fechas y evaluación."""
-    score = score_de(l)
+    """Contenido del desplegable: veredicto, score, puntos críticos, riesgos, pagos, fechas y evaluación."""
+    res = rubrica.resultado_guardado(l)
     if an:
         st.html(f'<div class="l-veredicto"><b>Veredicto IA ·</b> {escape(an.get("veredicto") or "Sin veredicto")}</div>')
+        _render_rubrica(l, an, simplificado)
         if not simplificado:
             c1, c2 = st.columns(2)
             with c1:
                 seccion("Puntos críticos")
                 st.html(html_lista(an['puntos_criticos'][:3]) if an['puntos_criticos'] else '<div class="l-nota">—</div>')
             with c2:
-                seccion("Riesgos")
+                seccion("Riesgos comerciales")
                 st.html(html_lista(an['riesgos'][:3]) if an['riesgos'] else '<div class="l-nota">—</div>')
-            if score is not None and score < config.UMBRAL_DESCARTE and es_valor_util(l.get('motivo_archivo')):
+            if sugiere_descartar(res) and es_valor_util(l.get('motivo_archivo')):
                 st.html(f'<div class="l-nota">Por qué la IA sugiere descartarla: {escape(l["motivo_archivo"])}</div>')
     elif l.get('analisis_ia_json'):
         st.warning("Este análisis no está disponible.")
@@ -554,7 +677,9 @@ def _filtros(lista, clave, ocultar_cerradas=True):
     regiones = sorted({l['region'] for l in lista if es_valor_util(l.get('region'))})
     c1, c2, c3 = st.columns([2.2, 1.2, 1.7], vertical_alignment="bottom")
     texto = c1.text_input("Buscar", placeholder="Título u organismo", key=f"f_txt_{clave}", icon=":material/search:")
-    score_min = c2.select_slider("Score mínimo", options=list(range(1, 11)), value=1, key=f"f_score_{clave}")
+    score_min = c2.select_slider("Score mínimo", options=list(range(0, 101, 5)), value=0, key=f"f_score_{clave}",
+                                 help="Escala 0–100. Con un mínimo mayor que 0 se ocultan las no elegibles, "
+                                      "las de evaluación insuficiente y las de la escala anterior.")
     sel_regiones = c3.multiselect("Región", regiones, key=f"f_reg_{clave}", placeholder="Todas las regiones",
                                   format_func=region_corta)
     c4, c5 = st.columns([3, 1], vertical_alignment="center")
@@ -600,7 +725,8 @@ def pagina_oportunidades():
     promedio = f"{m['score_promedio']}".replace(".", ",") if m["score_promedio"] is not None else "—"
     kpis = [("Oportunidades activas", m["activas"], "target", "acento", "Abiertas, incluidas favoritas"),
             ("Cierran esta semana", m["cierran_7"], "schedule", "medio" if m["cierran_7"] else "acento", "En los próximos 7 días"),
-            ("Score promedio", promedio, "insights", "alto", "De las oportunidades activas"),
+            ("Score promedio", promedio, "insights", "alto",
+             f"De {m['n_definitivos']} con score definitivo (0–100)" if m["n_definitivos"] else "Sin scores definitivos aún"),
             ("En proceso", m["en_cola"], "pending_actions", "acento", "Esperando lectura o análisis")]
     for col, (etiqueta, valor, icono, tinte, pie) in zip(st.columns(4), kpis):
         col.html(html_kpi(etiqueta, valor, icono, tinte, pie))
@@ -634,6 +760,7 @@ def pagina_favoritas():
             with c1:
                 if an:
                     st.html(f'<div class="l-veredicto"><b>Veredicto IA ·</b> {escape(an.get("veredicto") or "Sin veredicto")}</div>')
+                    _render_rubrica(l, an)
                     a, b = st.columns(2)
                     with a:
                         seccion("Puntos clave")
@@ -774,19 +901,27 @@ def _impacto_perfil(base, perfil):
     if not version:
         return
     todas = base.obtener_licitaciones()
-    afectados = afectados_por_perfil(todas, version)
+    por_perfil = afectados_por_perfil(todas, version)
+    por_rubrica = con_rubrica_anterior(todas)
+    ids_perfil = {l['id_externo'] for l in por_perfil}
+    afectados = por_perfil + [l for l in por_rubrica if l['id_externo'] not in ids_perfil]
     fuera = cola_fuera_de_perfil(todas, perfil)
 
     with st.container(border=True, key="lcard_perfil_impacto"):
         seccion("Análisis y perfil actual")
         if not afectados and not fuera:
-            st.html('<div class="l-dato">Todos tus análisis están al día con este perfil.</div>')
+            st.html('<div class="l-dato">Todos tus análisis están al día con este perfil y con la rúbrica del score.</div>')
             return
-        st.caption("Cambiar el perfil no modifica los análisis existentes. Si quieres, puedes actualizarlos aquí.")
+        st.caption("Cambiar el perfil o la rúbrica no modifica los análisis existentes. Si quieres, puedes actualizarlos aquí; "
+                   "el análisis anterior queda guardado en el historial.")
 
         if afectados:
-            st.markdown(f"**{len(afectados)}** {'oportunidad se analizó' if len(afectados) == 1 else 'oportunidades se analizaron'} "
-                        "con una versión anterior de tu perfil, así que su score podría no reflejar lo que buscas hoy.")
+            if por_perfil:
+                st.markdown(f"**{len(por_perfil)}** {'oportunidad se analizó' if len(por_perfil) == 1 else 'oportunidades se analizaron'} "
+                            "con una versión anterior de tu perfil, así que su score podría no reflejar lo que buscas hoy.")
+            if por_rubrica:
+                st.markdown(f"**{len(por_rubrica)}** {'oportunidad tiene' if len(por_rubrica) == 1 else 'oportunidades tienen'} "
+                            "un score con la rúbrica anterior (escala 1–10), que no se compara con el actual (0–100).")
             confirmar = st.checkbox(f"Entiendo que esto usará hasta {len(afectados)} análisis de IA", key="conf_reanalisis")
             if st.button(f"Actualizar {len(afectados)} análisis", icon=":material/refresh:", disabled=not confirmar,
                          key="btn_reanalizar_lote"):

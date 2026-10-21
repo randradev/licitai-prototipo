@@ -11,8 +11,8 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 * **Filtrado:** conserva las licitaciones *Publicadas* y aún abiertas cuyo título contiene alguna palabra clave de interés y ninguna palabra a excluir (sin distinguir mayúsculas ni tildes).
 * **Cola recuperable:** registra todas las licitaciones relevantes y procesa hasta `LICITAI_MAX_PROCESAR` por ejecución. Las restantes y las que fallan se retoman en las siguientes sincronizaciones (hasta `LICITAI_MAX_INTENTOS` intentos). Las que no pudieron completarse quedan visibles en la página **En proceso**, con un botón **Reintentar**.
 * **Datos de la fuente:** el título, el organismo, la fecha de publicación, la región y el **número de reclamos por pagos atrasados** se toman literalmente del texto de la ficha. Si un dato no aparece se muestra "No disponible"; nunca se inventa.
-* **Análisis IA:** Gemini (con `temperature=0`) devuelve un JSON con un score del 1 al 10, un veredicto, puntos críticos y riesgos. La respuesta se valida antes de guardarse. Si un nuevo análisis falla, se conserva el anterior.
-* **Trazabilidad:** cada análisis guarda el modelo, la versión del prompt (`PROMPT_VERSION` en `core/ai_analyst.py`), la versión del perfil y su fecha. En la interfaz se ve como «Analizado el …», con los detalles técnicos en un desplegable.
+* **Análisis IA con rúbrica:** Gemini (con `temperature=0`) asigna una nota de 0 a 5 a cada criterio de la rúbrica, con su evidencia, y entrega veredicto, puntos críticos y riesgos. **El score de idoneidad (0–100) y su estado los calcula Python**, no el modelo (ver «Score de idoneidad»). La respuesta se valida antes de guardarse. Si un nuevo análisis falla, se conserva el anterior.
+* **Trazabilidad:** cada análisis guarda el modelo, la versión del prompt (`PROMPT_VERSION` en `core/ai_analyst.py`), la versión de la rúbrica (`RUBRICA_VERSION` en `core/rubrica.py`), la versión del perfil y su fecha. Al re-analizar, el análisis anterior (con tu evaluación) se copia a la tabla `analisis_historial`. En la interfaz se ve como «Analizado el …», con los detalles técnicos en un desplegable.
 * **Tu evaluación:** en cada análisis puedes indicar si el score fue acertado y si postularías. Esas respuestas forman un conjunto de datos con criterio humano para medir la calidad del score.
 * **Perfil versionado:** al cambiar las palabras clave o la descripción de la empresa, los análisis existentes no cambian. Se marcan como «Analizada con un perfil anterior» y desde **Perfil** puedes actualizarlos a pedido (con confirmación, porque cada uno usa un análisis de IA) o descartar de la cola las licitaciones que ya no coinciden.
 * **Exportación:** Excel (CSV) o JSON (con la ficha completa opcional), separando los datos de la fuente, el análisis de IA y tu evaluación. Las notas internas no se exportan.
@@ -20,18 +20,18 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 ### Páginas
 | Página | Contenido |
 |---|---|
-| **Oportunidades** | Indicadores, búsqueda y filtros (score mínimo, región, orden, ocultar cerradas) y tarjetas con el score, los días al cierre, la región y los reclamos de pago. Cada tarjeta despliega el análisis y tu evaluación. |
+| **Oportunidades** | Indicadores, búsqueda y filtros (score mínimo, región, orden, ocultar cerradas) y tarjetas con el score y su estado, los días al cierre, la región y los reclamos de pago. Cada tarjeta despliega el análisis con el desglose por criterio y tu evaluación. |
 | **Favoritas** | Detalle ampliado y preparación: checklist («Bases leídas», «Anexos preparados») y notas internas. |
 | **Archivo** | Licitaciones descartadas, con opción de restaurarlas. |
 | **En proceso** | Licitaciones que aún no terminan de analizarse y las que no pudieron completarse. |
 | **Panorama** | «De lo publicado a tus oportunidades» (embudo), «Próximos cierres» (días restantes por licitación), score vs. reclamos de pago, distribución de scores y «¿Qué tan acertada es la IA?» (se dibuja desde 10 evaluaciones), además de la descarga de datos. |
-| **Perfil** | Palabras clave de interés, palabras a excluir, descripción de la empresa y alineación de los análisis con el perfil actual. |
+| **Perfil** | Palabras clave de interés, palabras a excluir, descripción de la empresa y alineación de los análisis con el perfil y la rúbrica actuales. |
 
 ## ⚠️ Qué no hace / limitaciones
 * Solo consulta **una fecha por ejecución**: si no se ejecuta un día, ese listado no se revisa (puedes usar `python main.py --fecha DDMMAAAA`).
 * El filtro mira **solo el título** del listado. La región se muestra después de la extracción, pero no se usa para filtrar (el listado de la API no la trae).
 * No lee las bases en PDF; analiza solo el texto visible de la ficha (truncado a `LICITAI_IA_MAX_CHARS`).
-* El score todavía **no tiene una rúbrica explícita** (qué significa cada valor del 1 al 10) y su precisión **aún no está medida**. Ver «Estado y próximos pasos».
+* Los pesos y rangos de la rúbrica son una **hipótesis inicial sin validar**, y la precisión del score **aún no está medida**. Ver «Score de idoneidad».
 * Depende de la estructura actual del portal (selectores de Selenium) y del SDK `google-generativeai`, que Google ya no mantiene (genera un `FutureWarning`).
 * La sincronización corre dentro de la petición de Streamlit y puede tardar varios minutos. Lo que hagas en la página mientras tanto se aplica al terminar. Solo puede haber una sincronización activa por base de datos: un archivo `<bd>.lock` evita que dos pestañas del navegador, o la UI y una tarea programada, procesen lo mismo a la vez.
 * Interfaz con tema oscuro único, pensada para escritorio.
@@ -48,9 +48,10 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 | `main.py` | Orquestador del pipeline (CLI y UI) y re-análisis en lote. Devuelve un resumen de lo ocurrido. |
 | `core/scraper.py` | API de Mercado Público, filtro y extracción con Selenium. |
 | `core/ai_analyst.py` | Prompt, llamada a Gemini y validación de la respuesta. |
+| `core/rubrica.py` | Rúbrica versionada del score: criterios, pesos, escala, rangos, cálculo del score 0–100 y de su estado. |
 | `core/database_mgr.py` | Persistencia SQLite, ciclo de vida de estados, evaluaciones, ejecuciones y migración de esquema. |
 | `core/parsing.py` | Funciones puras: palabras clave, fechas, metadatos de la ficha, validación del JSON y versión del perfil. |
-| `core/config.py` | Variables de entorno, constantes (umbrales del score, límites) y logging. |
+| `core/config.py` | Variables de entorno, constantes (límites, escala histórica 1–10) y logging. |
 | `core/migrar_datos.py` | Corrección única de los datos guardados por versiones anteriores. |
 | `core/exportar.py` | Exportación a JSON y CSV independiente del esquema SQLite. |
 | `web/app.py` | Punto de entrada del dashboard: tema, estilos y navegación superior. |
@@ -60,6 +61,36 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 | `web/panorama.py` | Visualizaciones: preparación de datos y gráficos Altair (paleta validada sobre el fondo oscuro). |
 | `web/static/fonts/` | Tipografía Inter incluida en el proyecto (licencia OFL): la interfaz no depende de internet. |
 | `.streamlit/config.toml` | Tema oscuro de Streamlit: fuente, colores, bordes y radios. |
+
+## 🎯 Score de idoneidad
+Especificación completa: [`licitai-scoring-rubrica-v1.md`](licitai-scoring-rubrica-v1.md). Implementación: `core/rubrica.py` (versión **v1.1**, ver abajo).
+
+El score mide **qué tan compatible es una licitación con el perfil de tu empresa**. **No es la probabilidad de ganarla.**
+
+| Criterio | Peso |
+|---|---:|
+| Compatibilidad comercial *(esencial, bloqueante)* | 35 % |
+| Requisitos obligatorios *(esencial)* | 25 % |
+| Capacidad de cumplimiento | 20 % |
+| Viabilidad geográfica y logística | 10 % |
+| Viabilidad económica y contractual | 10 % |
+
+`score = 35·n1/5 + 25·n2/5 + 20·n3/5 + 10·n4/5 + 10·n5/5`, con notas enteras de 0 a 5. Con estos pesos el total definitivo siempre es entero. El provisional se normaliza sobre el peso evaluado y se redondea *half-up* (85,5 → 86). Ejemplo: `[5, 4, 4, 3, 3]` → **83** (la especificación indica 84, pero su propia fórmula da 83).
+
+| Estado | Cuándo | Cómo se muestra |
+|---|---|---|
+| `definitivo` | Los cinco criterios tienen nota | `83/100` + rango (90–100 excelente · 75–89 buena · 60–74 potencial · 40–59 limitado · 0–39 baja) |
+| `provisional` | La compatibilidad comercial tiene nota y falta algún otro criterio | Número + «PROV.» y cobertura (% del peso evaluado). No es comparable con un definitivo ni entra en el promedio. Si faltan los requisitos: «Requisitos: revisar bases» |
+| `no_elegible` | Incumplimiento **confirmado y con evidencia** de un requisito excluyente | Sin número: el score no compensa el incumplimiento. Un requisito solo «no verificable» no excluye |
+| `evaluacion_insuficiente` | Falta la compatibilidad comercial, no se identifica el objeto o el perfil no describe la empresa (en ese caso no se consulta a la IA) | «Evaluación incompleta», sin número, con el motivo y los datos faltantes |
+| histórico | Análisis anteriores a la rúbrica (`score_ia` 1–10) | `8/10 ANT.`: se muestran tal cual, **nunca se convierten**. Se re-evalúan solo a pedido desde **Perfil** |
+
+* **v1.1 (desviación de la especificación):** los requisitos obligatorios sin evidencia ya no bloquean la evaluación. En Mercado Público suelen estar en las bases PDF, que el prototipo no lee; con la v1 esas licitaciones quedaban sin score aunque el encaje comercial fuera evidente. Ahora el score queda provisional, con un aviso para revisar las bases.
+* La geografía solo se evalúa si el perfil indica dónde opera o despacha la empresa (la región de la licitación sola no basta).
+* La IA no puede poner nota sin evidencia: una nota con evidencia «ausente» se descarta y queda una advertencia visible. Un 5 sin evidencia suficiente también genera una advertencia.
+* Una respuesta malformada (nota fuera de 0–5, criterio ausente, JSON roto) es un fallo: se reintenta y conserva el análisis anterior.
+* El **riesgo de pago** (reclamos de la ficha, con su fecha de lectura) y la **urgencia** (fecha de cierre) se muestran aparte y no forman parte del score. Sin dato de la fuente se muestra «Sin datos verificados».
+* **Limitaciones:** pesos y umbrales iniciales, **sin validar** con evaluaciones humanas. Las pruebas automáticas verifican el cálculo y la validación, no la calidad del juicio del modelo.
 
 **Estados de una licitación:** `pendiente` (registrada) → `extraido` (texto de la ficha guardado) → `analizado` → `favorita` / `archivada`. `error`: agotó los reintentos, cerró antes de procesarse o se descartó porque ya no coincide con el perfil.
 
@@ -131,7 +162,7 @@ Las pruebas son deterministas: usan bases temporales y simulan la API, Selenium 
 
 ## 🗺️ Estado y próximos pasos
 * **Recopilación de datos en curso:** el prototipo se ejecuta a diario para acumular análisis reales y evaluaciones humanas. Las cifras de calidad del score se publicarán solo cuando la muestra lo permita, indicando siempre su tamaño.
-* **Rúbrica del score (pendiente):** definir qué significa cada valor de idoneidad del 1 al 10 e incorporarlo al prompt (con una nueva `PROMPT_VERSION`).
+* **Validar la rúbrica:** comparar el score y su desglose con evaluaciones humanas sobre una muestra representativa, y ampliar la evaluación con los campos de la especificación (§9: adecuada / parcial / inadecuada, evidencia correcta, excluyentes omitidos).
 * **Versión 2:** está prevista una evolución Full Stack (API, tareas asíncronas, frontend web y análisis de bases PDF). El stack aún no está decidido.
 
 ---

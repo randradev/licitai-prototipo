@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from core import rubrica
 from core.database_mgr import DatabaseManager
 from web import vistas as helpers
 
@@ -16,12 +17,34 @@ APP = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "app.py")
 AHORA = datetime(2026, 10, 20, 12, 0)
 
 
-def test_score_y_nivel():
-    assert helpers.score_de({"score_ia": None}) is None
-    assert helpers.score_de({"score_ia": "8"}) == 8
-    assert helpers.nivel_score(None) == "nulo"
-    assert helpers.nivel_score(7) == "alto" and helpers.nivel_score(4) == "medio" and helpers.nivel_score(3) == "bajo"
-    assert helpers.texto_score(None) == "Sin score"
+def _v1(estado="definitivo", score=None, **kw):
+    """Campos de un análisis con la rúbrica v1."""
+    return dict({"rubrica_version": rubrica.RUBRICA_VERSION, "score_estado": estado, "score_idoneidad": score}, **kw)
+
+
+def test_score_comparable_solo_con_la_rubrica():
+    assert helpers.score_comparable({"score_ia": None}) is None
+    assert helpers.score_comparable({"score_ia": "8"}) is None                 # Escala anterior: no se compara con 0-100
+    assert helpers.score_comparable(_v1("definitivo", 83)) == 83
+    assert helpers.score_comparable(_v1("provisional", 71)) == 71
+    assert helpers.score_comparable(_v1("no_elegible")) is None
+    assert helpers.score_comparable(_v1("evaluacion_insuficiente")) is None
+
+
+def test_sugiere_descartar():
+    r = rubrica.resultado_guardado
+    assert helpers.sugiere_descartar(r(_v1("no_elegible")))
+    assert helpers.sugiere_descartar(r(_v1("definitivo", 39))) and not helpers.sugiere_descartar(r(_v1("definitivo", 40)))
+    assert helpers.sugiere_descartar(r({"score_ia": 4})) and not helpers.sugiere_descartar(r({"score_ia": 5}))
+    assert not helpers.sugiere_descartar(r(_v1("evaluacion_insuficiente")))
+
+
+def test_cierre_no_altera_el_score():
+    """La urgencia se muestra aparte: la fecha de cierre no cambia el resultado ni su posición por score."""
+    base = _v1("definitivo", 83, id_externo="X")
+    hoy, lejos = dict(base, fecha_cierre="2026-10-20T18:00:00"), dict(base, fecha_cierre="2027-03-01T10:00:00")
+    assert rubrica.resultado_guardado(hoy) == rubrica.resultado_guardado(lejos)
+    assert helpers.clave_mayor_score(hoy) == helpers.clave_mayor_score(lejos)
 
 
 def test_info_pago_distingue_procedencia():
@@ -30,6 +53,9 @@ def test_info_pago_distingue_procedencia():
     assert "180" in fuente and "Fuente: Mercado Público" in fuente and ia == "Riesgo alto"
     # El antiguo heurístico ('0' en el texto => verde) ya no existe
     assert helpers.info_pago({"reclamos_pago_n": 0, "reclamo_pago": "No informado"})[1] is None
+    # La fuente indica cuándo se leyó la ficha, si se registró
+    fuente, _ = helpers.info_pago({"reclamos_pago_n": 3, "ficha_fecha": "2026-10-21T09:15:00"})
+    assert fuente.endswith("(ficha leída el 21/10/2026)")
 
 
 def test_agrupar_por_fecha_cronologico_con_formatos_mixtos():
@@ -74,14 +100,14 @@ def test_tarjeta_html_escapa_texto_externo():
 
 
 LISTA = [
-    {"id_externo": "A", "titulo": "Reactivos clínicos", "organismo": "Hospital Uno", "region": "Región del Maule",
-     "score_ia": 9, "fecha_cierre": "2026-11-30T10:00:00", "fecha_publicacion": "2026-10-01"},
-    {"id_externo": "B", "titulo": "Microscopio", "organismo": "Municipalidad de Angol", "region": "Región de la Araucanía",
-     "score_ia": 6, "fecha_cierre": "2026-10-22T10:00:00", "fecha_publicacion": "2026-10-15"},
+    _v1("definitivo", 92, id_externo="A", titulo="Reactivos clínicos", organismo="Hospital Uno", region="Región del Maule",
+        fecha_cierre="2026-11-30T10:00:00", fecha_publicacion="2026-10-01"),
+    _v1("provisional", 64, id_externo="B", titulo="Microscopio", organismo="Municipalidad de Angol",
+        region="Región de la Araucanía", fecha_cierre="2026-10-22T10:00:00", fecha_publicacion="2026-10-15"),
     {"id_externo": "C", "titulo": "Centrífuga", "organismo": "Hospital Dos", "region": None,
      "score_ia": None, "fecha_cierre": None, "fecha_publicacion": None},
-    {"id_externo": "D", "titulo": "Cerrada", "organismo": "Hospital Tres", "region": "Región del Maule",
-     "score_ia": 8, "fecha_cierre": "2026-10-01T10:00:00", "fecha_publicacion": "2026-09-20"},
+    _v1("definitivo", 85, id_externo="D", titulo="Cerrada", organismo="Hospital Tres", region="Región del Maule",
+        fecha_cierre="2026-10-01T10:00:00", fecha_publicacion="2026-09-20"),
 ]
 
 
@@ -97,14 +123,24 @@ def test_filtrar_y_ordenar():
     assert _ids(f(LISTA, orden="Más recientes", ahora=AHORA)) == ["B", "A", "D", "C"]
     assert _ids(f(LISTA, texto="ANGOL", ahora=AHORA)) == ["B"]                      # Busca también en organismo
     assert _ids(f(LISTA, texto="centrifuga", ahora=AHORA)) == ["C"]                 # Sin tildes
-    assert _ids(f(LISTA, score_min=8, orden="Mayor score", ahora=AHORA)) == ["A", "D"]  # Sin score queda fuera
+    assert _ids(f(LISTA, score_min=80, orden="Mayor score", ahora=AHORA)) == ["A", "D"]  # Sin score queda fuera
+    assert _ids(f(LISTA, score_min=0, ahora=AHORA)) == ["D", "B", "A", "C"]              # Mínimo 0 = sin filtro
     assert _ids(f(LISTA, regiones=["Región del Maule"], orden="Mayor score", ahora=AHORA)) == ["A", "D"]
+
+
+def test_mayor_score_agrupa_por_estado():
+    """Primero los scores 0-100 (definitivo o provisional), luego la escala anterior y al final los sin número."""
+    lista = [_v1("no_elegible", id_externo="NE"), {"id_externo": "H", "score_ia": 9}, _v1("definitivo", 50, id_externo="D50"),
+             _v1("evaluacion_insuficiente", id_externo="I"), _v1("provisional", 70, id_externo="P70"), {"id_externo": "SIN"}]
+    assert _ids(helpers.filtrar_y_ordenar(lista, orden="Mayor score", ahora=AHORA)) == ["P70", "D50", "H", "I", "NE", "SIN"]
+    assert _ids(helpers.filtrar_y_ordenar(lista, score_min=5, ahora=AHORA)) == ["P70", "D50"]   # El 9/10 no pasa a 0-100
 
 
 def test_metricas_resumen():
     lista = [dict(l, estado="analizado") for l in LISTA] + [{"id_externo": "E", "estado": "error"}]
     m = helpers.metricas_resumen(lista, AHORA)
-    assert m == {"activas": 3, "cierran_7": 1, "score_promedio": 7.5, "en_cola": 1}
+    # Promedio solo de definitivos abiertos (A); el provisional B no se mezcla
+    assert m == {"activas": 3, "cierran_7": 1, "score_promedio": 92.0, "n_definitivos": 1, "en_cola": 1}
 
 
 def test_trazabilidad_sin_jerga_y_detalles_aparte():
@@ -149,9 +185,34 @@ def test_mensaje_sincronizacion():
     assert "palabra clave" in error
 
 
-def test_anillo_de_score():
-    assert "--p:80%" in helpers.html_anillo(8) and "<b>8</b>" in helpers.html_anillo(8)
-    assert "--p:0%" in helpers.html_anillo(None) and "–" in helpers.html_anillo(None)
+def test_anillo_distingue_cada_estado():
+    anillo = lambda licit: helpers.html_anillo(rubrica.resultado_guardado(licit))
+    definitivo = anillo(_v1("definitivo", 83))
+    assert "--p:83%" in definitivo and "<b>83</b><small>/100</small>" in definitivo
+    assert "<small>PROV.</small>" in anillo(_v1("provisional", 71))
+    assert "NO ELEG." in anillo(_v1("no_elegible")) and helpers.COLOR_NIVEL["bajo"] in anillo(_v1("no_elegible"))
+    assert "INCOMPL." in anillo(_v1("evaluacion_insuficiente")) and "SIN DATOS" not in anillo(_v1("evaluacion_insuficiente"))
+    historico = anillo({"score_ia": 8})
+    assert "--p:80%" in historico and "<b>8</b><small>/10 ANT.</small>" in historico
+    assert "--p:0%" in anillo({}) and "–" in anillo({})
+
+
+def test_chips_y_desglose():
+    r = rubrica.resultado_guardado
+    assert "Buena oportunidad" in "".join(helpers.chips_score(r(_v1("definitivo", 83))))
+    provisional = "".join(helpers.chips_score(r(_v1("provisional", 71, score_cobertura=80))))
+    assert "Provisional" in provisional and "Cobertura 80 %" in provisional
+    assert "Escala anterior" in "".join(helpers.chips_score(r({"score_ia": 8})))
+    assert helpers.chips_score(r({})) == []
+    # Si no es definitivo, muestra lo que sí se sabe
+    an = {"criterios": {"comercial": {"nota": 1}, "requisitos": {"nota": None}}}
+    incompleto = "".join(helpers.chips_score(r(_v1("provisional", 20, score_cobertura=35)), an))
+    assert "Encaje comercial 1/5" in incompleto and "l-bajo" in incompleto and "Requisitos: revisar bases" in incompleto
+    assert "Encaje comercial" not in "".join(helpers.chips_score(r(_v1("definitivo", 83)), an))
+    tabla = helpers.html_desglose({"criterios": {"comercial": {"nota": 5, "evidencia_estado": "suficiente",
+                                                               "evidencia": "<i>cita</i>", "explicacion": "encaja"}}})
+    assert "5/5" in tabla and "Peso 35 %" in tabla and "&lt;i&gt;cita&lt;/i&gt;" in tabla
+    assert tabla.count("Sin nota") == 4   # Criterios sin nota no se inventan
 
 
 def test_evaluacion_desactualizada():
@@ -177,9 +238,41 @@ def app_db(tmp_path, monkeypatch):
         "INSERT INTO licitaciones (id_externo, titulo, fecha_publicacion, fecha_cierre, estado, score_ia, analisis_ia_json,"
         " ultimo_error, reclamos_pago_n, region) VALUES (?, ?, '2026-02-05', ?, ?, ?, ?, ?, 40, 'Región del Maule')",
         [(i, f"Licitación de prueba {i}", cierre, e, s, a, "Timeout" if e == "error" else None) for i, e, s, a in filas])
+    # Análisis con la rúbrica v1, uno por estado (incluye un caso sin datos de pago)
+    analisis_v1 = json.dumps({
+        "veredicto": "ok v1", "puntos_criticos": ["p"], "riesgos": ["r"],
+        "criterios": {"comercial": {"nota": 5, "evidencia_estado": "suficiente", "evidencia": "cita", "explicacion": "x"}},
+        "requisitos_excluyentes": [{"requisito": "Registro ISP", "estado": "incumplido_confirmado", "evidencia": "Lo exige"}],
+        "datos_faltantes": ["Presupuesto"], "hechos_fuente": ["h"], "inferencias": ["i"],
+        "rubrica": {"version": "v1", "motivo": "Motivo del estado", "advertencias": ["Advertencia de prueba"]}})
+    estados_v1 = [("V1D", "definitivo", 83, 100), ("V1P", "provisional", 71, 80), ("V1N", "no_elegible", None, 100),
+                  ("V1I", "evaluacion_insuficiente", None, 20)]
+    conn.executemany(
+        "INSERT INTO licitaciones (id_externo, titulo, fecha_publicacion, fecha_cierre, estado, analisis_ia_json, rubrica_version,"
+        " score_estado, score_idoneidad, score_cobertura) VALUES (?, ?, '2026-02-05', ?, 'analizado', ?, 'v1', ?, ?, ?)",
+        [(i, f"Licitación v1 {i}", cierre, analisis_v1, e, s, c) for i, e, s, c in estados_v1])
     conn.commit()
     conn.close()
     return db
+
+
+def _html(at):
+    return " ".join(str(e.proto) for e in at.get("html"))
+
+
+def test_estados_del_score_se_renderizan(app_db):
+    """Oportunidades distingue definitivo, provisional, no elegible, insuficiente y escala anterior."""
+    at = _app()
+    assert not at.exception
+    html = _html(at)
+    for texto in ("/100", "PROV.", "NO ELEG.", "INCOMPL.", "/10 ANT.", "Buena oportunidad", "Cobertura 80 %",
+                  "Escala anterior", "Evaluación incompleta", "Encaje comercial 5/5", "Requisitos: revisar bases", "Desglose del score", "Motivo del estado",
+                  "Advertencia de prueba", "Registro ISP", "no es la probabilidad"):
+        assert texto in html, texto
+    # Sin dato de la fuente: no se presume bajo riesgo de pago
+    assert "Sin datos verificados sobre pagos" in html
+    at = _app("favoritas")
+    assert not at.exception
 
 
 def _boton(at, key):
@@ -342,7 +435,9 @@ def test_panorama_con_ejecuciones_y_evaluaciones(app_db):
     for i in range(12):   # Supera el mínimo para dibujar la calibración
         id_ = f"EV{i}"
         app_db.guardar_licitacion({"id_externo": id_, "titulo": f"Evaluada {i}"})
-        app_db.guardar_analisis_ia(id_, 3 + i % 7, {"veredicto": "ok"})
+        score = 10 * (i % 10) + 5
+        app_db.guardar_analisis_ia(id_, None, {"veredicto": "ok"},
+                                   rubrica={"version": "v1", "estado": "definitivo", "score": score, "cobertura": 100})
         app_db.guardar_evaluacion(id_, "acertado", ("si", "no", "tal_vez")[i % 3])
     at = _app("panorama")
     assert not at.exception

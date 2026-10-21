@@ -140,3 +140,50 @@ def test_guardar_notas_persiste(db, tmp_path):
     fila = DatabaseManager(db.db_path).obtener_licitacion("X")   # Nueva instancia = nueva sesión
     assert fila["notas"] == "Costos revisados"
     assert json.loads(fila["checklist_json"]) == {"bases_leidas": True, "anexos_preparados": False}
+
+
+# --- Rúbrica: compatibilidad con análisis históricos e historial ---
+
+def test_analisis_historico_se_conserva_tal_cual_al_migrar(tmp_path):
+    """Un análisis 1-10 de una BD antigua no se recalcula ni se convierte: queda como histórico."""
+    from core.rubrica import resultado_guardado
+    path = str(tmp_path / "vieja.db")
+    conn = sqlite3.connect(path)
+    conn.execute(ESQUEMA_ANTIGUO)
+    conn.execute("INSERT INTO licitaciones (id_externo, titulo, estado, score_ia, analisis_ia_json)"
+                 " VALUES ('A-1', 'Título', 'analizado', 8, '{\"veredicto\": \"ok\"}')")
+    conn.commit()
+    conn.close()
+
+    fila = DatabaseManager(path).obtener_licitacion("A-1")
+    assert fila["score_ia"] == 8 and fila["analisis_ia_json"] == '{"veredicto": "ok"}'
+    assert (fila["score_idoneidad"], fila["score_estado"], fila["rubrica_version"], fila["ficha_fecha"]) == (None,) * 4
+    assert resultado_guardado(fila)["estado"] == "historico"
+
+
+def test_reanalisis_archiva_el_analisis_anterior_con_su_evaluacion(db):
+    rubrica_v1 = {"version": "v1", "estado": "definitivo", "score": 83, "cobertura": 100}
+    db.guardar_licitacion({"id_externo": "X", "titulo": "T"})
+    db.guardar_analisis_ia("X", 7, {"veredicto": "histórico"}, prompt_version="viejo")
+    assert db.obtener_historial("X") == []   # El primer análisis no reemplaza nada
+    db.guardar_evaluacion("X", "muy_alto", "no", "pide experiencia")
+
+    db.guardar_analisis_ia("X", None, {"veredicto": "nuevo"}, prompt_version="nuevo", rubrica=rubrica_v1)
+    fila = db.obtener_licitacion("X")
+    assert (fila["score_ia"], fila["score_idoneidad"], fila["score_estado"], fila["rubrica_version"]) == (None, 83, "definitivo", "v1")
+    historial = db.obtener_historial("X")
+    assert len(historial) == 1
+    h = historial[0]
+    assert (h["score_ia"], h["rubrica_version"], h["analisis_prompt_version"]) == (7, None, "viejo")
+    assert json.loads(h["analisis_ia_json"])["veredicto"] == "histórico"
+    assert (h["eval_score"], h["eval_postularia"], h["eval_comentario"]) == ("muy_alto", "no", "pide experiencia")
+    assert h["reemplazado"]
+
+    db.guardar_analisis_ia("X", None, {"veredicto": "otro"}, rubrica=dict(rubrica_v1, score=60))
+    assert [h["score_idoneidad"] for h in db.obtener_historial("X")] == [83, None]   # Más reciente primero
+
+
+def test_lectura_de_ficha_registra_su_fecha(db):
+    db.guardar_licitacion({"id_externo": "X", "titulo": "T"})
+    db.actualizar_detalle_profundo("X", "http://x", "texto")
+    assert db.obtener_licitacion("X")["ficha_fecha"]

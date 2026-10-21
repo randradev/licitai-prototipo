@@ -25,7 +25,7 @@ import os
 import time
 from contextlib import contextmanager
 from datetime import datetime
-from core import config
+from core import config, rubrica
 from core.database_mgr import DatabaseManager
 from core.scraper import LicitacionScraper, DriverNoDisponible
 from core.ai_analyst import AIAnalyst, AnalisisFallido, CuotaAgotada
@@ -252,13 +252,15 @@ def _ejecutar(db, scraper, analyst, max_procesar, max_intentos, pausa, fecha, ah
             log.warning(f"⚠️ La IA no pudo procesar esta licitación: {e} (estado: {estado})")
         else:
             resumen["analizadas"] += 1
-            score = analis['score_ia']
-            log.info(f"🎯 ANÁLISIS COMPLETADO - SCORE: {score}/{config.SCORE_MAX}")
+            res = rubrica.resultado_guardado(db.obtener_licitacion(id_ext) or {})
+            log.info(f"🎯 ANÁLISIS COMPLETADO - SCORE: {rubrica.texto_resultado(res)}")
+            if (analis.get('rubrica') or {}).get('motivo'):
+                log.info(f"ℹ️ {analis['rubrica']['motivo']}")
             log.info(f"📝 VEREDICTO: {analis.get('veredicto')}")
             for p in analis.get('puntos_criticos', []): log.info(f"   • {p}")
             log.info("⚠️ RIESGOS:")
             for r in analis.get('riesgos', []): log.info(f"   • {r}")
-            if score < config.UMBRAL_DESCARTE:
+            if res["estado"] == rubrica.NO_ELEGIBLE or (res["valor"] is not None and res["valor"] < rubrica.UMBRAL_DESCARTE):
                 log.info(f"📂 MOTIVO DE ARCHIVO: {analis.get('motivo_archivo')}")
 
         # Gestión de estabilidad: Evitar bloqueos por parte del servidor destino (Mercado Público)
