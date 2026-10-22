@@ -7,10 +7,10 @@ toolbarMode = "minimal"
 gatherUsageStats = false
 
 [server]
-# Sirve web/static/ (tipografía incluida en el proyecto: sin depender de internet)
+# Sirve web/static/ (tipografías incluidas en el proyecto: sin depender de internet)
 enableStaticServing = true
 
-# --- Tema: "premium oscuro" (único tema) ---
+# --- Tema: "editorial claro" (único tema) ---
 # Tokens alineados con web/estilos.py y la paleta de gráficos de web/panorama.py
 [[theme.fontFaces]]
 family = "Inter"
@@ -18,17 +18,32 @@ url = "app/static/fonts/Inter-latin.woff2"
 weight = "400 700"
 style = "normal"
 
+[[theme.fontFaces]]
+family = "Newsreader"
+url = "app/static/fonts/Newsreader-latin.woff2"
+weight = "400 700"
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Newsreader"
+url = "app/static/fonts/Newsreader-Italic-latin.woff2"
+weight = "400 600"
+style = "italic"
+
 [theme]
-base = "dark"
+base = "light"
 font = "Inter, sans-serif"
+headingFont = "Newsreader, Georgia, serif"
 baseFontSize = 15
 baseRadius = "0.625rem"
 buttonRadius = "0.5rem"
 showWidgetBorder = true
-headingFontWeights = [650, 600, 600, 600, 600, 600]
-primaryColor = "#5e6ad2"
-backgroundColor = "#08090a"
-secondaryBackgroundColor = "#141517"
-textColor = "#f7f8f8"
-borderColor = "#23252a"
-linkColor = "#8b92ee"
+headingFontWeights = [500, 600, 600, 600, 600, 600]
+primaryColor = "#2a5bd7"
+backgroundColor = "#f6f4ef"
+secondaryBackgroundColor = "#efece5"
+textColor = "#1a1917"
+borderColor = "#d6d0c3"
+dataframeBorderColor = "#e7e3da"
+dataframeHeaderBackgroundColor = "#f3f1ec"
+linkColor = "#1f47a8"

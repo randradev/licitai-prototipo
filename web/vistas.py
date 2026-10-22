@@ -37,7 +37,7 @@ ORDENES = ("Cierre más próximo", "Mayor score", "Más recientes")
 ESTADOS_COLA = ("pendiente", "extraido", "error")
 
 # Colores de marca del anillo de score (paleta de estado; ver web/estilos.py)
-COLOR_NIVEL = {"alto": "#0ca30c", "medio": "#fab219", "bajo": "#d03b3b", "nulo": "#5b5f67"}
+COLOR_NIVEL = {"alto": "#0ca30c", "medio": "#fab219", "bajo": "#d03b3b", "nulo": "#b8b3a7"}
 
 
 # ===================================================================

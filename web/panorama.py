@@ -28,18 +28,20 @@ _LIMITES = sorted(desde for desde, _ in rubrica.RANGOS)
 TRAMOS_SCORE = tuple((f"{d}–{h}", d, h) for d, h in zip(_LIMITES, [x - 1 for x in _LIMITES[1:]] + [100]))
 PERIODOS = {"Últimos 7 días": 7, "Últimos 30 días": 30, "Últimos 90 días": 90, "Todo": None}
 
-# Tokens de los gráficos, alineados con web/estilos.py (tema "premium oscuro").
-# Validados con el script de la guía de visualización contra la superficie #0f1012:
-# serie índigo con contraste >= 3:1 y rampa índigo de un solo tono (--ordinal).
+# Tokens de los gráficos, alineados con web/estilos.py (tema "editorial claro").
+# Validados con el script de la guía de visualización contra la superficie #ffffff de
+# las tarjetas: serie azul tinta (= acento de la UI) con contraste >= 3:1 y rampa
+# azul de un solo tono (--ordinal).
 TEMAS = {
+    "light": {"serie": "#2a5bd7", "rampa": ["#86b6ef", "#5598e7", "#256abf", "#104281"],
+              "superficie": "#ffffff", "texto": "#1a1917", "texto2": "#45433e", "muted": "#6f6c64",
+              "grid": "#eeebe4", "eje": "#d6d0c3"},
+    # Paleta oscura anterior (sin uso en la UI actual; se conserva por si vuelve un tema oscuro)
     "dark": {"serie": "#7c82f2", "rampa": ["#3f44a8", "#5e6ad2", "#8b92ee", "#bcc0fa"],
              "superficie": "#0f1012", "texto": "#f7f8f8", "texto2": "#b4b8bf", "muted": "#7d828b",
              "grid": "rgba(255,255,255,0.06)", "eje": "rgba(255,255,255,0.12)"},
-    # Paleta clara de referencia (sin uso en la UI actual; se conserva para un tema claro futuro)
-    "light": {"serie": "#2a78d6", "rampa": ["#86b6ef", "#5598e7", "#256abf", "#104281"],
-              "superficie": "#fcfcfb", "texto": "#0b0b0b", "texto2": "#52514e", "muted": "#898781",
-              "grid": "#e1e0d9", "eje": "#c3c2b7"},
 }
+FUENTE_GRAFICOS = "Inter, sans-serif"
 
 
 # ===================================================================
@@ -199,7 +201,7 @@ def datos_calibracion(licitaciones):
 
 def _config(chart, t):
     """Chrome recesivo: grilla y ejes en hairline, texto en tintas de texto."""
-    return (chart.configure(background="transparent")   # El fondo lo pone la tarjeta
+    return (chart.configure(background="transparent", font=FUENTE_GRAFICOS)   # El fondo lo pone la tarjeta
             .configure_view(stroke=None)
             .configure_axis(gridColor=t["grid"], domainColor=t["eje"], tickColor=t["eje"],
                             labelColor=t["muted"], titleColor=t["texto2"], labelFontSize=12, titleFontSize=12,
@@ -301,8 +303,8 @@ def grafico_calibracion(filas, t):
 # ===================================================================
 
 def _tema():
-    """Tokens de los gráficos (la UI usa un único tema oscuro)."""
-    return TEMAS["dark"]
+    """Tokens de los gráficos (la UI usa un único tema claro)."""
+    return TEMAS["light"]
 
 
 def _tabla(df, columnas):

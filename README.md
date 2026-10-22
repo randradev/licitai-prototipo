@@ -34,7 +34,7 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 * Los pesos y rangos de la rúbrica son una **hipótesis inicial sin validar**, y la precisión del score **aún no está medida**. Ver «Score de idoneidad».
 * Depende de la estructura actual del portal (selectores de Selenium) y del SDK `google-generativeai`, que Google ya no mantiene (genera un `FutureWarning`).
 * La sincronización corre dentro de la petición de Streamlit y puede tardar varios minutos. Lo que hagas en la página mientras tanto se aplica al terminar. Solo puede haber una sincronización activa por base de datos: un archivo `<bd>.lock` evita que dos pestañas del navegador, o la UI y una tarea programada, procesen lo mismo a la vez.
-* Interfaz con tema oscuro único, pensada para escritorio.
+* Interfaz con tema claro único de estilo editorial (Newsreader + Inter, incluidas en el proyecto), pensada para escritorio. Las animaciones se desactivan si el sistema pide movimiento reducido.
 * Single-tenant (un único perfil). No se ha verificado su despliegue en Streamlit Cloud ni en otros servicios.
 
 ---
@@ -57,10 +57,10 @@ LicitAI es un **prototipo** que ayuda a revisar oportunidades de **Mercado Públ
 | `web/app.py` | Punto de entrada del dashboard: tema, estilos y navegación superior. |
 | `web/paginas/*.py` | Una página por archivo (Oportunidades, Favoritas, Archivo, En proceso, Panorama, Perfil). |
 | `web/vistas.py` | Contenido de cada página: tarjetas, filtros, formularios, mensajes para el usuario y helpers de presentación. |
-| `web/estilos.py` | CSS de la estética «premium oscuro»: tarjetas, KPIs, anillo de score, chips y retoques de los controles. |
-| `web/panorama.py` | Visualizaciones: preparación de datos y gráficos Altair (paleta validada sobre el fondo oscuro). |
-| `web/static/fonts/` | Tipografía Inter incluida en el proyecto (licencia OFL): la interfaz no depende de internet. |
-| `.streamlit/config.toml` | Tema oscuro de Streamlit: fuente, colores, bordes y radios. |
+| `web/estilos.py` | CSS de la estética «editorial clara»: tarjetas, KPIs, anillo de score, chips, animaciones y retoques de los controles. |
+| `web/panorama.py` | Visualizaciones: preparación de datos y gráficos Altair (paleta validada sobre la superficie clara). |
+| `web/static/fonts/` | Tipografías Inter y Newsreader incluidas en el proyecto (licencia OFL): la interfaz no depende de internet. |
+| `.streamlit/config.toml` | Tema claro de Streamlit: fuentes, colores, bordes y radios. |
 
 ## 🎯 Score de idoneidad
 Especificación completa: [`licitai-scoring-rubrica-v1.md`](licitai-scoring-rubrica-v1.md). Implementación: `core/rubrica.py` (versión **v1.1**, ver abajo).

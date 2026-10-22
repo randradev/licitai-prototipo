@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="140" height="32" viewBox="0 0 140 32" role="img" aria-label="LicitAI">
+  <rect x="0.75" y="2.75" width="26.5" height="26.5" rx="13.25" fill="#ffffff" stroke="#d6d0c3" stroke-width="1.5"/>
+  <circle cx="9.5" cy="22.5" r="2.3" fill="#2a5bd7"/>
+  <path d="M9.5 15.4a7.1 7.1 0 0 1 7.1 7.1" fill="none" stroke="#2a5bd7" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M9.5 9.2a13.3 13.3 0 0 1 13.3 13.3" fill="none" stroke="#2a5bd7" stroke-width="2.2" stroke-linecap="round" opacity=".45"/>
+  <text x="36" y="22.8" font-family="Newsreader, Georgia, 'Times New Roman', serif" font-size="21" font-weight="600" fill="#1a1917" letter-spacing="-0.4">Licit<tspan font-style="italic" font-weight="500" fill="#2a5bd7">AI</tspan></text>
+</svg>

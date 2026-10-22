@@ -25,9 +25,9 @@ from web.estilos import css
 st.set_page_config(page_title="LicitAI", page_icon=":material/radar:", layout="wide")
 config.configurar_logging()
 
-# Estilos (tema único "premium oscuro"; ver .streamlit/config.toml)
+# Estilos (tema único "editorial claro"; ver .streamlit/config.toml)
 st.html(css())
-st.logo(os.path.join(RAIZ, "web", "assets", "logo-dark.svg"), size="large")
+st.logo(os.path.join(RAIZ, "web", "assets", "logo-light.svg"), size="large")
 
 PAGINAS = os.path.join(RAIZ, "web", "paginas")
 navegacion = st.navigation([
