@@ -36,6 +36,12 @@ POSTULARIA_LABELS = {"si": "Sí", "tal_vez": "Tal vez", "no": "No"}
 ORDENES = ("Cierre más próximo", "Mayor score", "Más recientes")
 ESTADOS_COLA = ("pendiente", "extraido", "error")
 
+# Modo demo pública (LICITAI_DEMO; ver DEMO.md): se explora todo, pero no se sincroniza ni se llama a la IA
+AVISO_DEMO = ("**Demo pública.** Prototipo con un perfil de negocio ficticio y datos reales de Mercado Público "
+              "capturados entre el 20 y el 23/10/2026; la app se muestra como si hoy fuera el último día de la captura. "
+              "Puedes explorar, marcar favoritas y evaluar; la sincronización y los análisis con IA están desactivados.")
+AYUDA_DEMO = "No disponible en la demo pública: aquí no se ejecutan sincronizaciones ni análisis con IA."
+
 # Colores de marca del anillo de score (paleta de estado; ver web/estilos.py)
 COLOR_NIVEL = {"alto": "#0ca30c", "medio": "#fab219", "bajo": "#d03b3b", "nulo": "#b8b3a7"}
 
@@ -469,8 +475,10 @@ def cabecera(base, titulo, subtitulo, icono):
             cuando = inicio.strftime("%d/%m %H:%M") if inicio else "—"
             st.html(f'<div class="l-sync">Última sincronización <b>{cuando}</b> · {u["analizadas"]} analizadas</div>')
         if st.button("Sincronizar ahora", icon=":material/sync:", type="primary", width="stretch", key="btn_sync",
-                     help=f"Busca las licitaciones publicadas hoy y analiza hasta {config.MAX_PROCESAR} nuevas. "
-                          "Puede tardar unos minutos."):
+                     disabled=config.MODO_DEMO,
+                     help=AYUDA_DEMO if config.MODO_DEMO else
+                     f"Busca las licitaciones publicadas hoy y analiza hasta {config.MAX_PROCESAR} nuevas. "
+                     "Puede tardar unos minutos."):
             with st.status("Buscando y analizando licitaciones…", expanded=False) as status:
                 try:
                     # Importación diferida para evitar dependencias circulares
@@ -486,6 +494,8 @@ def cabecera(base, titulo, subtitulo, icono):
             st.session_state['ultimo_mensaje'] = (nivel, mensaje)
             st.rerun()
 
+    if config.MODO_DEMO:
+        st.info(AVISO_DEMO, icon=":material/visibility:")
     perfil = base.obtener_perfil() or {}
     if not normalizar_keywords(perfil.get('keywords_pos')):
         st.warning("Agrega al menos una palabra clave de interés en **Perfil** para empezar a buscar licitaciones.",
@@ -650,7 +660,9 @@ def _mas_acciones(base, l, clave_reanalizar):
             st.link_button("Ver en Mercado Público", l['link'], icon=":material/open_in_new:", width="stretch")
         if l.get('descripcion_pro'):
             if st.button("Actualizar análisis", icon=":material/refresh:", key=clave_reanalizar, width="stretch",
-                         help="Pide un análisis nuevo a la IA. Si algo falla, se mantiene el actual."):
+                         disabled=config.MODO_DEMO,
+                         help=AYUDA_DEMO if config.MODO_DEMO else
+                         "Pide un análisis nuevo a la IA. Si algo falla, se mantiene el actual."):
                 _reanalizar(base, l['id_externo'])
 
 
@@ -836,9 +848,10 @@ def pagina_cola():
                     f'<div class="l-chips">{"".join(chips)}</div>{error}')
             with c2:
                 if st.button("Analizar ahora", icon=":material/bolt:", key=f"now_{l['id_externo']}", width="stretch",
-                             type="primary" if l['estado'] != 'error' else "secondary",
-                             help="La analiza en este momento, sin esperar a la próxima sincronización. Usa 1 análisis "
-                                  "de IA; si la ficha aún no se leyó, primero abre el portal (puede tardar un minuto)."):
+                             type="primary" if l['estado'] != 'error' else "secondary", disabled=config.MODO_DEMO,
+                             help=AYUDA_DEMO if config.MODO_DEMO else
+                             "La analiza en este momento, sin esperar a la próxima sincronización. Usa 1 análisis "
+                             "de IA; si la ficha aún no se leyó, primero abre el portal (puede tardar un minuto)."):
                     _analizar_ahora(base, l['id_externo'])
                 if l['estado'] == 'error':
                     if st.button("Reintentar", icon=":material/replay:", key=f"retry_{l['id_externo']}", width="stretch",
@@ -968,8 +981,9 @@ def _impacto_perfil(base, perfil):
                 st.markdown(f"**{len(por_rubrica)}** {'oportunidad tiene' if len(por_rubrica) == 1 else 'oportunidades tienen'} "
                             "un score con la rúbrica anterior (escala 1–10), que no se compara con el actual (0–100).")
             confirmar = st.checkbox(f"Entiendo que esto usará hasta {len(afectados)} análisis de IA", key="conf_reanalisis")
-            if st.button(f"Actualizar {len(afectados)} análisis", icon=":material/refresh:", disabled=not confirmar,
-                         key="btn_reanalizar_lote"):
+            if st.button(f"Actualizar {len(afectados)} análisis", icon=":material/refresh:",
+                         disabled=config.MODO_DEMO or not confirmar, key="btn_reanalizar_lote",
+                         help=AYUDA_DEMO if config.MODO_DEMO else None):
                 from main import reanalizar_lote
                 barra = st.progress(0.0, text="Actualizando análisis…")
                 r = reanalizar_lote(base, [l['id_externo'] for l in afectados],

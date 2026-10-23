@@ -17,7 +17,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from core import rubrica
+from core import config, rubrica
 from core.parsing import cargar_analisis_guardado, dias_para_cierre, es_valor_util, parsear_fecha_hora
 
 ESTADOS_ACTIVOS = ("analizado", "favorita")
@@ -63,7 +63,7 @@ def en_periodo(licitaciones, dias, ahora=None):
     """Licitaciones registradas en los últimos `dias` días (None = todas)."""
     if dias is None:
         return list(licitaciones)
-    desde = (ahora or datetime.now()).date() - timedelta(days=dias - 1)
+    desde = (ahora or config.ahora()).date() - timedelta(days=dias - 1)
     return [l for l in licitaciones if (_fecha_registro(l) or desde) >= desde]
 
 
@@ -76,7 +76,7 @@ def datos_embudo(licitaciones, ejecuciones, dias=None, ahora=None):
     - Relevantes / Analizadas / Favoritas: licitaciones registradas desde la
       primera ejecución registrada, para que las etapas sean comparables.
     """
-    ahora = ahora or datetime.now()
+    ahora = ahora or config.ahora()
     desde = ahora.date() - timedelta(days=dias - 1) if dias else None
     por_fecha = {}
     for e in ejecuciones:
@@ -102,7 +102,7 @@ def datos_embudo(licitaciones, ejecuciones, dias=None, ahora=None):
 
 def datos_calendario(licitaciones, ahora=None):
     """Oportunidades activas aún abiertas, ordenadas por cierre."""
-    ahora = ahora or datetime.now()
+    ahora = ahora or config.ahora()
     filas = []
     for l in licitaciones:
         cierre = parsear_fecha_hora(l.get("fecha_cierre"))

@@ -17,7 +17,7 @@ import hashlib
 import unicodedata
 from datetime import datetime
 
-from core import rubrica
+from core import config, rubrica
 
 # Valores de relleno que nunca deben sobrescribir un dato real
 MARCADORES = {"", "sin título", "sin titulo", "procesando...", "no detectado",
@@ -155,7 +155,7 @@ def esta_cerrada(fecha_cierre, ahora=None):
     cierre = parsear_fecha_hora(fecha_cierre)
     if not cierre:
         return False
-    return cierre < (ahora or datetime.now())
+    return cierre < (ahora or config.ahora())
 
 
 def dias_para_cierre(fecha_cierre, ahora=None):
@@ -168,7 +168,7 @@ def dias_para_cierre(fecha_cierre, ahora=None):
     cierre = parsear_fecha_hora(fecha_cierre)
     if not cierre:
         return None
-    ahora = ahora or datetime.now()
+    ahora = ahora or config.ahora()
     if cierre < ahora:
         return min(-1, (cierre.date() - ahora.date()).days)
     return (cierre.date() - ahora.date()).days

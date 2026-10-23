@@ -12,6 +12,7 @@ que el comportamiento no depende del directorio desde el que se ejecute.
 import logging
 import os
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -104,6 +105,27 @@ def configurar_logging():
         handler._licitai = True
         raiz.addHandler(handler)
     return raiz
+
+
+# --- Demo pública (ver DEMO.md). Sin estas variables, la app funciona igual que siempre ---
+MODO_DEMO = _env_bool("LICITAI_DEMO", False)   # Deshabilita la sincronización y los análisis con IA en la UI
+
+
+def _env_fecha(nombre):
+    """Leer una fecha AAAA-MM-DD desde el entorno, o None si falta o es inválida."""
+    try:
+        return date.fromisoformat((os.getenv(nombre) or "").strip())
+    except ValueError:
+        return None
+
+
+FECHA_DEMO = _env_fecha("LICITAI_DEMO_FECHA")   # Fecha de referencia fija (los datos de la demo no caducan)
+
+
+def ahora():
+    """Momento actual; con LICITAI_DEMO_FECHA, ese día a la hora actual."""
+    actual = datetime.now()
+    return datetime.combine(FECHA_DEMO, actual.time()) if FECHA_DEMO else actual
 
 
 # --- Pipeline ---
